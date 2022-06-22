@@ -17,7 +17,7 @@ $script:BaseUrl = $portalBaseUrl
 #Target Connection Configuration     # Needed for accessing the Target System (These variables are also required for the Actions of each product)
 $ExchangeAdminUsername = $ExchangeAdminUsername
 $ExchangeAdminPassword = $ExchangeAdminPassword
-$Filter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided, all Cloud Distribution Groups will be queried
+$Filter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided ($Filter = $null), all Cloud Distribution Groups will be queried
 
 
 #HelloID Product Configuration
