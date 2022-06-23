@@ -1,7 +1,7 @@
 #####################################################
 # HelloID-SA-Sync-Exchange-Online-DistributionGroup-To-Products
 #
-# Version: 1.0.0.0
+# Version: 1.1.0.0
 #####################################################
 $VerbosePreference = 'SilentlyContinue'
 $informationPreference = 'Continue'
@@ -13,12 +13,10 @@ $portalApiKey = $portalApiKey
 $portalApiSecret = $portalApiSecret
 $script:BaseUrl = $portalBaseUrl
 
-
 #Target Connection Configuration     # Needed for accessing the Target System (These variables are also required for the Actions of each product)
 $ExchangeAdminUsername = $ExchangeAdminUsername
 $ExchangeAdminPassword = $ExchangeAdminPassword
 $Filter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided ($Filter = $null), all Cloud Distribution Groups will be queried
-
 
 #HelloID Product Configuration
 $ProductAccessGroup = 'Users'           # If not found, the product is created without extra Access Group
@@ -30,6 +28,8 @@ $removeProduct = $true                  # If False product will be disabled
 $overwriteExistingProduct = $true       # If True existing product will be overwritten with the input from this script (e.g. the approval worklow or icon). Only use this when you actually changed the product input
 $overwriteExistingProductAction = $true # If True existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
 $productVisibility = 'All'
+
+$setDistributionGroupOwnerAsResourceOwner = $true # If True the owner(s) of the Distribution Group will be set as the Resource owner of the corresponding HelloID Self service Product. The user(s) and group(s) have to exist in HelloID to be able to be added to the Resource Owner group
 
 #Target System Configuration
 # Dynamic property invocation
@@ -365,6 +365,78 @@ function Get-HIDGroup {
         $Pscmdlet.ThrowTerminatingError($_)
     }
 }
+
+function Get-HIDGroups {
+    <#
+    .DESCRIPTION
+       https://docs.helloid.com/hc/en-us/articles/115002994414-GET-Get-groups
+    #>
+    [Cmdletbinding()]
+    param(
+    )
+
+    try {
+        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
+
+        $splatParams = @{
+            Method   = 'GET'
+            Uri      = "groups"
+            PageSize = 1000
+        }
+
+        Invoke-HIDRestMethod @splatParams
+    }
+    catch {
+        $Pscmdlet.ThrowTerminatingError($_)
+    }
+}
+
+
+function Get-HIDUsers {
+    <#
+    .DESCRIPTION
+       https://docs.helloid.com/hc/en-us/articles/115002969074-GET-Get-all-users
+    #>
+    [Cmdletbinding()]
+    param(
+        [System.Nullable[boolean]]
+        $IsEnabled = $null,
+
+        [System.Nullable[boolean]]
+        $IsDeleted = $null
+    )
+
+    try {
+        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
+
+        $splatParams = @{
+            Method   = 'GET'
+            Uri      = "users"
+            PageSize = 1000
+        }
+
+        if($null -ne $IsEnabled){
+            if($splatParams.Uri -match '\?'){
+                $splatParams.Uri = $splatParams.Uri + "&enabled=$($IsEnabled)"
+            }else{
+                $splatParams.Uri = $splatParams.Uri + "?enabled=$($IsEnabled)"
+            }
+        }
+        if($null -ne $isDeleted){
+            if($splatParams.Uri -match '\?'){
+                $splatParams.Uri = $splatParams.Uri + "&isDeleted=$($IsDeleted)"
+            }else{
+                $splatParams.Uri = $splatParams.Uri + "?isDeleted=$($IsDeleted)"
+            }
+        }
+
+        Invoke-HIDRestMethod @splatParams
+    }
+    catch {
+        $Pscmdlet.ThrowTerminatingError($_)
+    }
+}
+
 function Add-HIDProductMember {
     <#
     .DESCRIPTION
@@ -397,7 +469,7 @@ function Add-HIDProductMember {
     }
 }
 
-function Add-HIDGroupMember {
+function Add-HIDGroupMemberUser {
     <#
     .DESCRIPTION
         https://docs.helloid.com/hc/en-us/articles/115002954633-POST-Link-member-to-group
@@ -417,9 +489,41 @@ function Add-HIDGroupMember {
         Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
         $splatParams = @{
             Method = 'POST'
-            Uri    = "groups/$GroupGUID"
+            Uri    = "groups/$GroupGUID/users"
             Body   = @{
                 UserGUID = $MemberGUID
+            } | ConvertTo-Json
+        }
+        Invoke-HIDRestMethod @splatParams
+    }
+    catch {
+        $Pscmdlet.ThrowTerminatingError($_)
+    }
+}
+
+function Add-HIDGroupMemberGroup {
+    <#
+    .DESCRIPTION
+        https://docs.helloid.com/hc/en-us/articles/115002954633-POST-Link-member-to-group
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]
+        $GroupGUID,
+
+        [Parameter(Mandatory)]
+        [string]
+        $MemberGUID
+    )
+
+    try {
+        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
+        $splatParams = @{
+            Method = 'POST'
+            Uri    = "groups/$GroupGUID/membergroups"
+            Body   = @{
+                groupGUID = $MemberGUID
             } | ConvertTo-Json
         }
         Invoke-HIDRestMethod @splatParams
@@ -432,6 +536,7 @@ function Add-HIDGroupMember {
 function Add-HIDUserGroup {
     <#
     .DESCRIPTION
+        https://docs.helloid.com/hc/en-us/articles/115002954493-POST-Link-group-to-member
     #>
     [CmdletBinding()]
     param (
@@ -441,7 +546,7 @@ function Add-HIDUserGroup {
 
         [Parameter()]
         [String]
-        $GroupName
+        $GroupGuid
     )
 
     try {
@@ -450,7 +555,7 @@ function Add-HIDUserGroup {
             Method = 'POST'
             Uri    = "users/$UserName/groups"
             Body   = @{
-                name = $GroupName
+                groupGUID = $GroupGuid
             } | ConvertTo-Json
         }
         Invoke-HIDRestMethod @splatRestParameters
@@ -478,7 +583,10 @@ function Invoke-HIDRestmethod {
         $Body,
 
         [string]
-        $ContentType = 'application/json'
+        $ContentType = 'application/json',
+
+        [System.Nullable[int]]
+        $PageSize = $null
     )
 
     try {
@@ -498,13 +606,40 @@ function Invoke-HIDRestmethod {
             Method  = $Method
         }
 
-        if ($Body) {
-            Write-Verbose 'Adding body to request'
-            $splatParams['Body'] = $Body
+        if($null -ne $PageSize){
+            $skip = 0
+            $take = $PageSize
+            if($splatParams.Uri -match '\?'){
+                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "&skip=$Skip" + "&take=$take"
+            }else{
+                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "?skip=$Skip" + "&take=$take"
+            }
+            Write-Verbose "Invoking '$Method' request to '$Uri'"
+            $result = Invoke-RestMethod @splatParams
+
+            while($result.Count -eq $take){
+                $skip += $take
+
+                if($splatParams.Uri -match '\?'){
+                    $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "&skip=$Skip" + "&take=$take"
+                }else{
+                    $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "?skip=$Skip" + "&take=$take"
+                }
+        
+                Write-Verbose "Invoking '$Method' request to '$Uri'"
+                $result += Invoke-RestMethod @splatParams
+            }            
+        }else{
+            if ($Body) {
+                Write-Verbose 'Adding body to request'
+                $splatParams['Body'] = ([System.Text.Encoding]::UTF8.GetBytes($Body))
+            }
+
+            Write-Verbose "Invoking '$Method' request to '$Uri'"
+            $result = Invoke-RestMethod @splatParams
         }
 
-        Write-Verbose "Invoking '$Method' request to '$Uri'"
-        Invoke-RestMethod @splatParams
+        Write-Output $result
     }
     catch {
         $PSCmdlet.ThrowTerminatingError($_)
@@ -861,12 +996,37 @@ try {
         if ($null -ne $Filter) {
             $parameters.Filter += " -and ($Filter)"
         }
-        $groups = Get-DistributionGroup @parameters -ErrorAction Stop
+        $exchangeGroups = Get-DistributionGroup @parameters -ErrorAction Stop
 
-        $TargetGroups = $groups
+        $TargetGroups = $exchangeGroups
         # $TargetGroups = $null              #easy way to remove all products
 
-        Write-HidStatus -Event Success -Message "Succesfully queried Exchange Distribution Groups. Result count: $($mailboxes.id.Count)"
+        Write-HidStatus -Event Success -Message "Succesfully queried Exchange Distribution Groups. Result count: $($exchangeGroups.id.Count)"
+
+        if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
+            Write-HidStatus -Event Information -Message "Querying Exchange Users"
+
+            $parameters = @{
+                ResultSize = "Unlimited"
+            }
+            $exchangeUsers = Get-User @parameters -ErrorAction Stop
+            $exchangeUsersGrouped = $exchangeUsers | Group-Object -Property 'identity' -AsHashTable -AsString
+    
+            Write-HidStatus -Event Success -Message "Succesfully queried Exchange Users. Result count: $($exchangeUsers.id.Count)"
+
+            # Query all groups, since owners can also be (in theory) other type of groups
+            Write-HidStatus -Event Information -Message "Querying Exchange groups"
+
+            $parameters = @{
+                ResultSize = "Unlimited"
+            }
+            $exchangeGroups = Get-Group @parameters -ErrorAction Stop
+            $exchangeGroupsGrouped = $exchangeGroups | Group-Object -Property 'identity' -AsHashTable -AsString
+    
+            Write-HidStatus -Event Success -Message "Succesfully queried Exchange groups. Result count: $($exchangeGroups.id.Count)"
+
+        }
+
     }
     catch {
         $PSCmdlet.ThrowTerminatingError($_)
@@ -923,10 +1083,19 @@ try {
     $selfServiceProduct = Get-HIDSelfServiceProduct
     $selfServiceProductGrouped = $selfServiceProduct | Group-Object -Property 'code' -AsHashTable -AsString
 
-
     Write-HidStatus -Message 'Gathering Self service product actions from HelloID' -Event Information
     $selfServiceProductAction = Get-HIDSelfServiceProductAction
     $selfServiceProductActionGrouped = $selfServiceProductAction | Group-Object -Property 'objectGuid' -AsHashTable -AsString
+
+    if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
+        Write-HidStatus -Message 'Gathering users from HelloID' -Event Information
+        $selfServiceUsers = Get-HIDUsers
+        $selfServiceUsersGrouped = $selfServiceUsers | Group-Object -Property 'username' -AsHashTable -AsString
+
+        Write-HidStatus -Message 'Gathering groups from HelloID' -Event Information
+        $selfServiceGroups = Get-HIDGroups
+        $selfServiceGroupsGrouped = $selfServiceGroups | Group-Object -Property 'name' -AsHashTable -AsString
+    }
 
     Write-HidStatus -Message '------[Summary]-----------------------' -Event Information
     Write-HidStatus -Message "Total HelloID Self Service Product(s) found [$($selfServiceProduct.Count)]" -Event Information
@@ -960,9 +1129,43 @@ try {
 
         $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName  -ResourceGroup
         if ($null -eq $resourceOwnerGroup ) {
-            Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName ) Resource Owners]" -Event Information
+            Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName) Resource Owners]" -Event Information
             $resourceOwnerGroup = New-HIDGroup -GroupName $resourceOwnerGroupName -isEnabled $true
         }
+
+        
+        if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
+            if ($null -eq $product.managedBy) {
+                Write-HidStatus "No owners found of Exchange Distribution Group [$($product.name)]" -Event Information
+            }
+            else {
+                Write-HidStatus "Setting owners of Exchange Distribution Group [$($product.name)] as members of HelloID Resource Owner Group [$($resourceOwnerGroup.name)]" -Event Information
+
+                $distributionGroupOwners = $product.managedBy
+                foreach ($distributionGroupOwner in $distributionGroupOwners) {
+                    # Owners can be either groups or users or a combination of both, therefore, check both
+
+                    # Check for user
+                    $exchangeUser = $exchangeUsersGrouped[$distributionGroupOwner]
+                    if ($null -ne $exchangeUser) {
+                        $helloIDUser = $selfServiceUsersGrouped[$($exchangeUser.UserPrincipalName)]
+                        if ($null -ne $helloIDUser) {
+                            $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
+                        }
+                    }else{
+                        # Check for group
+                        $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
+                        if ($null -ne $exchangeGroup) {
+                            $helloIDGroup = $selfServiceGroupsGrouped[$($exchangeGroup.Name)]
+                            if ($null -ne $helloIDGroup) {
+                                $null = Add-HIDGroupMemberGroup -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDGroup.groupGUID
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         $productBody = @{
             Name                       = "$($product.name)"
             Description                = "$TargetSystemName - $($product.name)"

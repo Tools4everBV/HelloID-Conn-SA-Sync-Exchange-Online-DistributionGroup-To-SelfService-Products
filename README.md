@@ -10,6 +10,7 @@
 ## Versioning
 | Version | Description | Date |
 | - | - | - |
+| 1.0.0   | Added support to add Distribution Group owner(s) to HelloID Resource Owner Group | 2022/06/23  |
 | 1.0.0   | Initial release | 2022/06/20  |
 
 <!-- TABLE OF CONTENTS -->
@@ -27,10 +28,10 @@
 ## Introduction
 By using this connector, you will have the ability to create HelloId SelfService Products based on Exchange Online Distribution Groups. It manages only the products of the target system. The existing and manually created products are unmanaged and excluded from the sync.
 
-The created Self-service Products are intended to manage the permissions of the Exchange Distribution Groups. For each mailbox, there will be one or more self-service products created. Depending on the number of permission types you specify.
-The name of the products will be Mailbox name + the type of permission. Example : "Accounting Department - FullAccess" or "Accounting Department - SendOnBehalf"
+The created Self-service Products are intended to manage the permissions of the Exchange Distribution Groups. For each Distribution Group, there will be one or more self-service products created. Depending on the number of permission types you specify.
+The name of the products will be Distribution Group name. Example : "Accounting Department"
 Optionally, you can include an Email action.
-
+Optionally, you can configurate this script to add Distribution Group owner(s) to HelloID Resource Owner Group. These owner(s) of the Distribution Group can be either users or groups. Both are supported to be added to the HelloID Resource Owner Group, but they **have to exist in HelloID**
 
 ## Getting started
 
@@ -54,7 +55,7 @@ The connection settings are defined in the automation variables [user defined va
 | $portalApiSecret              | HelloID Api Secret                      | (Default Global Variable)    |
 | $ExchangeAdminUsername        | Exchange BaseUrl/Powershell             | **Define as Global Varaible**  |
 | $ExchangeAdminPassword        | Exchange Admin Username                 | **Define as Global Varaible**  |
-| $Filter                       | Filter for Exchange Distribution Groups    | *Optional, when no filter is provided, all mailboxes will be queried*  |
+| $Filter                       | Filter for Exchange Distribution Groups    | *Optional, when no filter is provided, all Distribution Groups will be queried*  |
 | $ProductAccessGroup           | HelloID Product Access Group            | *If not found, the product is created without an Access Group* |
 | $ProductCategory              | HelloID Product Category                | *If the category is not found, it will be created* |
 | $SAProductResourceOwner       | HelloID Product Resource Owner Group    | *If left empty the groupname will be: "Resource owners [target-systeem] - [Product_Naam]")* |
@@ -79,9 +80,9 @@ The connection settings are defined in the automation variables [user defined va
 - When the overwriteExistingProduct switch is adjusted to overwrite the existing products, this will be performed for all products created from this sync. This will update also the previous disabled products (by the sync).
 - When the overwriteExistingProductAction switch is adjusted to overwrite the existing product actions, this will be performed for all products created from this sync. This will update also the previous disabled products (by the sync).
     > The Update will only take place for PowerShell actions. This will not take place for the Email actions (since there is no update API for Email actions).
-- The managers of the sharedmailboxes are not added in the "Resource Owner Group" of the products
+- The managers of the Distribution Groups are not added in the "Resource Owner Group" of the products
 - The Unique identifier (CombineduniqueId / SKU)   is builded as follows:
-  $SKUPrefix + GUID of the sharedmailboxes without dashes + Abbreviation of the permission Type
+  $SKUPrefix + GUID of the Distribution Groups without dashes + Abbreviation of the permission Type
 
 ## Getting help
 > _For more information on how to configure a HelloID PowerShell scheduled task, please refer to our [documentation](https://docs.helloid.com/hc/en-us/articles/115003253294-Create-Custom-Scheduled-Tasks) pages_
