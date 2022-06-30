@@ -615,9 +615,10 @@ function Invoke-HIDRestmethod {
                 $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "?skip=$Skip" + "&take=$take"
             }
             Write-Verbose "Invoking '$Method' request to '$Uri'"
-            $result = Invoke-RestMethod @splatParams
+            $tempResult = Invoke-RestMethod @splatParams
+            $result = $tempResult
 
-            while($result.Count -eq $take){
+            while($tempResult.Count -eq $take){
                 $skip += $take
 
                 if($splatParams.Uri -match '\?'){
@@ -627,7 +628,8 @@ function Invoke-HIDRestmethod {
                 }
         
                 Write-Verbose "Invoking '$Method' request to '$Uri'"
-                $result += Invoke-RestMethod @splatParams
+                $tempResult = Invoke-RestMethod @splatParams
+                $result += $tempResult
             }            
         }else{
             if ($Body) {
