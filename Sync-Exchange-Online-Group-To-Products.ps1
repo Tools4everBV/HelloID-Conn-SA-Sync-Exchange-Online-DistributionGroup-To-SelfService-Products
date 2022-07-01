@@ -565,7 +565,6 @@ function Add-HIDUserGroup {
     }
 }
 
-
 function Invoke-HIDRestmethod {
     [CmdletBinding()]
     param (
@@ -609,10 +608,12 @@ function Invoke-HIDRestmethod {
         if($null -ne $PageSize){
             $skip = 0
             $take = $PageSize
+
+            $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
             if($splatParams.Uri -match '\?'){
-                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "&skip=$Skip" + "&take=$take"
+                $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
             }else{
-                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "?skip=$Skip" + "&take=$take"
+                $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
             }
             Write-Verbose "Invoking '$Method' request to '$Uri'"
             $tempResult = Invoke-RestMethod @splatParams
@@ -621,10 +622,11 @@ function Invoke-HIDRestmethod {
             while($tempResult.Count -eq $take){
                 $skip += $take
 
+                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
                 if($splatParams.Uri -match '\?'){
-                    $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "&skip=$Skip" + "&take=$take"
+                    $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
                 }else{
-                    $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri" + "?skip=$Skip" + "&take=$take"
+                    $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
                 }
         
                 Write-Verbose "Invoking '$Method' request to '$Uri'"
