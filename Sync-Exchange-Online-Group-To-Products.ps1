@@ -314,7 +314,7 @@ function New-HIDGroup {
     try {
         Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
         $groupBody = @{
-            name      = "$GroupName Resource Owners"
+            name      = $GroupName
             isEnabled = $isEnabled
             userNames = ''
         } | ConvertTo-Json
@@ -341,17 +341,11 @@ function Get-HIDGroup {
     param(
         [Parameter(Mandatory)]
         [string]
-        $GroupName,
-
-        [switch]
-        $resourceGroup
+        $GroupName
     )
 
     try {
         Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        if ($resourceGroup) {
-            $groupname = "$GroupName Resource Owners"
-        }
         $splatParams = @{
             Method = 'GET'
             Uri    = "groups/$groupname"
@@ -724,28 +718,23 @@ function Add-GroupMember {
         [Parameter()]
         [string]
         $GroupName,
-
         [Parameter()]
         [String]
         $groupmember
     )
     try {
         Hid-Write-Status -Event Information -Message "Connecting to Exchange Online"
-
         # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
         $securePassword = ConvertTo-SecureString $ExchangeAdminPassword -AsPlainText -Force
         $credential = [System.Management.Automation.PSCredential]::new($ExchangeAdminUsername, $securePassword)
         $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
-
         Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
-
         # Add Send As Permissions
         $parameters = @{
             Identity        = $groupName
             Member          = $groupmember
             BypassSecurityGroupManagerCheck    = $true
         }
-
         $addPermission = Add-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
     }
     catch {
@@ -762,7 +751,6 @@ function Add-GroupMember {
     }
 }
 #endregion functions
-
 try {
     Hid-Write-Status -Event Information -Message "Adding user [$groupmember] to group [$groupName]"
     $null = Add-GroupMember -GroupName ($groupname.Split("-")[0].trim(" ")) -GroupMember $GroupMember
@@ -805,28 +793,23 @@ function Remove-GroupMember {
         [Parameter()]
         [string]
         $GroupName,
-
         [Parameter()]
         [String]
         $groupmember
     )
     try {
         Hid-Write-Status -Event Information -Message "Connecting to Exchange Online"
-
         # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
         $securePassword = ConvertTo-SecureString $ExchangeAdminPassword -AsPlainText -Force
         $credential = [System.Management.Automation.PSCredential]::new($ExchangeAdminUsername, $securePassword)
         $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
-
         Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
-
         # Add Send As Permissions
         $parameters = @{
             Identity        = $groupName
             Member          = $groupmember
             BypassSecurityGroupManagerCheck    = $true
         }
-
         $removePermission = Remove-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
     }
     catch {
@@ -847,7 +830,6 @@ function Remove-GroupMember {
     }
 }
 #endregion functions
-
 try {
     Hid-Write-Status -Event Information -Message "Removing user [$groupmember] from group [$groupName]"
     $null = Remove-GroupMember -GroupName ($groupname.Split("-")[0].trim(" ")) -GroupMember $GroupMember
@@ -886,9 +868,7 @@ $RemoveGroupMembershipAction = @{
 #region Emails
 $ApproveEmailContent = '
 Dear Servicedesk,
-
 The product {{product.name}} has sucesfully been granted to {{requester.fullName}}.
-
 Kind regards,
 HelloID
 '
@@ -930,9 +910,7 @@ $ApproveEmailAction = @{
 
 $ReturnEmailContent = '
 Dear Servicedesk,
-
 The product {{product.name}} has sucesfully been revoked for {{requester.fullName}}.
-
 Kind regards,
 HelloID
 '
@@ -1062,6 +1040,9 @@ try {
         $tempGroup | Add-Member @{
             CombinedUniqueId = $SKUPrefix + "$($group.$uniqueProperty)".Replace('-', '')
         }
+        # # Optional, override product name
+        # $tempGroup.name = $tempGroup.DisplayName
+
         $targetGroupsList.Add($tempGroup)
     }
     $TargetGroups = $targetGroupsList
@@ -1129,11 +1110,11 @@ try {
     foreach ($productToCreate in $productToCreateInHelloID) {
         $product = $TargetGroupsGrouped[$productToCreate]
         Write-HidStatus "Creating Product [$($product.name)]" -Event Information
-        $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { $product.name } else { $SAProductResourceOwner }
+        $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($product.name) Resource Owners" } else { $SAProductResourceOwner }
 
-        $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName  -ResourceGroup
+        $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName
         if ($null -eq $resourceOwnerGroup ) {
-            Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName) Resource Owners]" -Event Information
+            Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName)]" -Event Information
             $resourceOwnerGroup = New-HIDGroup -GroupName $resourceOwnerGroupName -isEnabled $true
         }
 
@@ -1254,18 +1235,51 @@ try {
             }
 
             # Optional, set product properties to update (that are in response of get products: https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products)
-            # $overwriteProductBody.name = "$($product.name)"
-            # $overwriteProductBody.Description = "$TargetSystemName - $($product.name)"
+            $newProduct = $TargetGroupsGrouped[$productToUpdate]
+            $overwriteProductBody.name = "$($newProduct.name)"
+            $overwriteProductBody.Description = "$TargetSystemName - $($newProduct.name)"
 
             # Check if resource owner group is specified and exists, if not create new group
-            $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($product.name)  Resource Owners" } else { $SAProductResourceOwner }
+            $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($overwriteProductBody.name) Resource Owners" } else { $SAProductResourceOwner }
 
             $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName
             if ($null -eq $resourceOwnerGroup ) {
-                Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName ) Resource Owners]" -Event Information
+                Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName)]" -Event Information
                 $resourceOwnerGroup = New-HIDGroup -GroupName $resourceOwnerGroupName -isEnabled $true
             }            
             $overwriteProductBody.ManagedByGroupGUID = $($resourceOwnerGroup.groupGuid)
+
+            if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
+                if ($null -eq $newProduct.managedBy) {
+                    Write-HidStatus "No owners found of Exchange Distribution Group [$($newProduct.name)]" -Event Information
+                }
+                else {
+                    Write-HidStatus "Setting owners of Exchange Distribution Group [$($newProduct.name)] as members of HelloID Resource Owner Group [$($resourceOwnerGroup.name)]" -Event Information
+    
+                    $distributionGroupOwners = $newProduct.managedBy
+                    foreach ($distributionGroupOwner in $distributionGroupOwners) {
+                        # Owners can be either groups or users or a combination of both, therefore, check both
+    
+                        # Check for user
+                        $exchangeUser = $exchangeUsersGrouped[$distributionGroupOwner]
+                        if ($null -ne $exchangeUser) {
+                            $helloIDUser = $selfServiceUsersGrouped[$($exchangeUser.UserPrincipalName)]
+                            if ($null -ne $helloIDUser) {
+                                $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
+                            }
+                        }else{
+                            # Check for group
+                            $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
+                            if ($null -ne $exchangeGroup) {
+                                $helloIDGroup = $selfServiceGroupsGrouped[$($exchangeGroup.Name)]
+                                if ($null -ne $helloIDGroup) {
+                                    $null = Add-HIDGroupMemberGroup -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDGroup.groupGUID
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             # Optional, add product properties to update (that aren't in response of get products: https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products)
             $overwriteProductBody | Add-Member @{
@@ -1327,4 +1341,4 @@ catch {
     Write-HidStatus -Message "Exception details: $($_.errordetails)" -Event Error
     Write-HidSummary -Message "Error synchronization of [$TargetSystemName] to HelloID products" -Event Failed
 }
-#endregion
+#endregio
