@@ -31,8 +31,8 @@ $returnProductOnUserDisable = $true # If True the product will be returned when 
 $setDistributionGroupOwnerAsResourceOwner = $true # If True the owner(s) of the Distribution Group will be set as the Resource owner of the corresponding HelloID Self service Product. The user(s) and group(s) have to exist in HelloID to be able to be added to the Resource Owner group
 
 $removeProduct = $true                  # If False product will be disabled
-$overwriteExistingProduct = $true       # If True existing product will be overwritten with the input from this script (e.g. the approval worklow or icon). Only use this when you actually changed the product input
-$overwriteExistingProductAction = $true # If True existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
+$overwriteExistingProduct = $false       # If True existing product will be overwritten with the input from this script (e.g. the approval worklow or icon). Only use this when you actually changed the product input
+$overwriteExistingProductAction = $false # If True existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
 
 
 #Target System Configuration
