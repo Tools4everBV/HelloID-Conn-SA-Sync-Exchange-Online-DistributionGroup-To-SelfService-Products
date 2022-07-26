@@ -1114,6 +1114,7 @@ try {
     $moduleName = "ExchangeOnlineManagement"
     $commands = @(
         "Get-User",
+        "Get-Group",
         "Get-DistributionGroup",
         "Add-DistributionGroupMember",
         "Remove-DistributionGroupMember",
