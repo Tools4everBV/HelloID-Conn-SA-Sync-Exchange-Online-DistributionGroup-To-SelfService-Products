@@ -14,8 +14,8 @@ $portalApiSecret = $portalApiSecret
 $script:BaseUrl = $portalBaseUrl
 
 #Target Connection Configuration     # Needed for accessing the Target System (These variables are also required for the Actions of each product)
-$ExchangeAdminUsername = $ExchangeAdminUsername
-$ExchangeAdminPassword = $ExchangeAdminPassword
+$ExchangeOnlineAdminUsername = $ExchangeAdminUsername
+$ExchangeOnlineAdminPassword = $ExchangeAdminPassword
 $Filter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided ($Filter = $null), all Cloud Distribution Groups will be queried
 
 #HelloID Product Configuration
@@ -24,12 +24,16 @@ $ProductCategory = 'Distribution Groups'   # If the category is not found, it wi
 $SAProductResourceOwner = ''            # If left empty the groupname will be: "Resource owners [target-systeem] - [Product_Naam]")
 $SAProductWorkflow = $null              # If empty. The Default HelloID Workflow is used. If specified Workflow does not exist the Product creation will raise an error.
 $FaIcon = 'group'
+$productVisibility = 'All'
+$productRequestCommentOption = 'Hidden' # Define if comments can be added when requesting the product. Supported options: Optional, Hidden, Required
+$returnProductOnUserDisable = $true # If True the product will be returned when the user owning the product gets disabled
+
+$setDistributionGroupOwnerAsResourceOwner = $true # If True the owner(s) of the Distribution Group will be set as the Resource owner of the corresponding HelloID Self service Product. The user(s) and group(s) have to exist in HelloID to be able to be added to the Resource Owner group
+
 $removeProduct = $true                  # If False product will be disabled
 $overwriteExistingProduct = $true       # If True existing product will be overwritten with the input from this script (e.g. the approval worklow or icon). Only use this when you actually changed the product input
 $overwriteExistingProductAction = $true # If True existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
-$productVisibility = 'All'
 
-$setDistributionGroupOwnerAsResourceOwner = $true # If True the owner(s) of the Distribution Group will be set as the Resource owner of the corresponding HelloID Self service Product. The user(s) and group(s) have to exist in HelloID to be able to be added to the Resource Owner group
 
 #Target System Configuration
 # Dynamic property invocation
@@ -409,17 +413,19 @@ function Get-HIDUsers {
             PageSize = 1000
         }
 
-        if($null -ne $IsEnabled){
-            if($splatParams.Uri -match '\?'){
+        if ($null -ne $IsEnabled) {
+            if ($splatParams.Uri -match '\?') {
                 $splatParams.Uri = $splatParams.Uri + "&enabled=$($IsEnabled)"
-            }else{
+            }
+            else {
                 $splatParams.Uri = $splatParams.Uri + "?enabled=$($IsEnabled)"
             }
         }
-        if($null -ne $isDeleted){
-            if($splatParams.Uri -match '\?'){
+        if ($null -ne $isDeleted) {
+            if ($splatParams.Uri -match '\?') {
                 $splatParams.Uri = $splatParams.Uri + "&isDeleted=$($IsDeleted)"
-            }else{
+            }
+            else {
                 $splatParams.Uri = $splatParams.Uri + "?isDeleted=$($IsDeleted)"
             }
         }
@@ -599,27 +605,29 @@ function Invoke-HIDRestmethod {
             Method  = $Method
         }
 
-        if($null -ne $PageSize){
+        if ($null -ne $PageSize) {
             $skip = 0
             $take = $PageSize
 
             $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
-            if($splatParams.Uri -match '\?'){
+            if ($splatParams.Uri -match '\?') {
                 $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
-            }else{
+            }
+            else {
                 $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
             }
             Write-Verbose "Invoking '$Method' request to '$Uri'"
             $tempResult = Invoke-RestMethod @splatParams
             $result = $tempResult
 
-            while($tempResult.Count -eq $take){
+            while ($tempResult.Count -eq $take) {
                 $skip += $take
 
                 $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
-                if($splatParams.Uri -match '\?'){
+                if ($splatParams.Uri -match '\?') {
                     $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
-                }else{
+                }
+                else {
                     $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
                 }
         
@@ -627,7 +635,8 @@ function Invoke-HIDRestmethod {
                 $tempResult = Invoke-RestMethod @splatParams
                 $result += $tempResult
             }            
-        }else{
+        }
+        else {
             if ($Body) {
                 Write-Verbose 'Adding body to request'
                 $splatParams['Body'] = ([System.Text.Encoding]::UTF8.GetBytes($Body))
@@ -723,16 +732,88 @@ function Add-GroupMember {
         $groupmember
     )
     try {
-        Hid-Write-Status -Event Information -Message "Connecting to Exchange Online"
-        # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-        $securePassword = ConvertTo-SecureString $ExchangeAdminPassword -AsPlainText -Force
-        $credential = [System.Management.Automation.PSCredential]::new($ExchangeAdminUsername, $securePassword)
-        $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
-        Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
+        # Import module
+        $moduleName = "ExchangeOnlineManagement"
+        $commands = @(
+            "Get-User",
+            "Get-DistributionGroup",
+            "Add-DistributionGroupMember",
+            "Remove-DistributionGroupMember",
+            "Get-EXOMailbox",
+            "Add-MailboxPermission",
+            "Add-RecipientPermission",
+            "Set-Mailbox",
+            "Remove-MailboxPermission",
+            "Remove-RecipientPermission"
+        )
+
+        # If module is imported say that and do nothing
+        if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+            Hid-Write-Status -Event Information -Message "Module $ModuleName is already imported."
+        }
+        else {
+            # If module is not imported, but available on disk then import
+            if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+                $module = Import-Module $ModuleName -Cmdlet $commands
+                Hid-Write-Status -Event Information -Message "Imported module $ModuleName"
+            }
+            else {
+                # If the module is not imported, not available and not in the online gallery then abort
+                Hid-Write-Status -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+                Hid-Write-Summary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+            }
+        }
+
+        # Check if Exchange Connection already exists
+        try {
+            $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
+            $connectedToExchange = $true
+        }
+        catch {
+            if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
+                $connectedToExchange = $false
+            }
+        }
+            
+        # Connect to Exchange
+        try {
+            if ($connectedToExchange -eq $false) {
+                Hid-Write-Status -Event Information -Message "Connecting to Exchange Online.."
+
+                # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+                $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
+                $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
+                $exchangeSessionParams = @{
+                    Credential       = $credential
+                    CommandName      = $commands
+                    ShowBanner       = $false
+                    ShowProgress     = $false
+                    TrackPerformance = $false
+                    ErrorAction      = 'Stop'
+                }
+                $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+
+                Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
+            }
+            else {
+                Hid-Write-Status -Event Information -Message "Already connected to Exchange Online"
+            }
+        }
+        catch {
+            if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
+                $errorMessage = "$($_.Exception.InnerExceptions)"
+            }
+            else {
+                $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
+            }
+            Hid-Write-Status -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
+            Hid-Write-Summary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
+        }
+
         # Add Send As Permissions
         $parameters = @{
             Identity        = $groupName
-            Member          = $groupmember
+            Member          = $groupMember
             BypassSecurityGroupManagerCheck    = $true
         }
         $addPermission = Add-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
@@ -753,7 +834,7 @@ function Add-GroupMember {
 #endregion functions
 try {
     Hid-Write-Status -Event Information -Message "Adding user [$groupmember] to group [$groupName]"
-    $null = Add-GroupMember -GroupName ($groupname.Split("-")[0].trim(" ")) -GroupMember $GroupMember
+    $null = Add-GroupMember -GroupName $groupName -GroupMember $GroupMember
     Hid-Write-Status -Event Success -Message "Succesfully added user [$groupmember] to group [$groupName]"
     Hid-Write-Summary -Event Success -Message "Succesfully added user [$groupmember] to group [$groupName]"
 }
@@ -798,16 +879,88 @@ function Remove-GroupMember {
         $groupmember
     )
     try {
-        Hid-Write-Status -Event Information -Message "Connecting to Exchange Online"
-        # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-        $securePassword = ConvertTo-SecureString $ExchangeAdminPassword -AsPlainText -Force
-        $credential = [System.Management.Automation.PSCredential]::new($ExchangeAdminUsername, $securePassword)
-        $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
-        Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
+        # Import module
+        $moduleName = "ExchangeOnlineManagement"
+        $commands = @(
+            "Get-User",
+            "Get-DistributionGroup",
+            "Add-DistributionGroupMember",
+            "Remove-DistributionGroupMember",
+            "Get-EXOMailbox",
+            "Add-MailboxPermission",
+            "Add-RecipientPermission",
+            "Set-Mailbox",
+            "Remove-MailboxPermission",
+            "Remove-RecipientPermission"
+        )
+
+        # If module is imported say that and do nothing
+        if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+            Hid-Write-Status -Event Information -Message "Module $ModuleName is already imported."
+        }
+        else {
+            # If module is not imported, but available on disk then import
+            if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+                $module = Import-Module $ModuleName -Cmdlet $commands
+                Hid-Write-Status -Event Information -Message "Imported module $ModuleName"
+            }
+            else {
+                # If the module is not imported, not available and not in the online gallery then abort
+                Hid-Write-Status -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+                Hid-Write-Summary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+            }
+        }
+
+        # Check if Exchange Connection already exists
+        try {
+            $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
+            $connectedToExchange = $true
+        }
+        catch {
+            if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
+                $connectedToExchange = $false
+            }
+        }
+            
+        # Connect to Exchange
+        try {
+            if ($connectedToExchange -eq $false) {
+                Hid-Write-Status -Event Information -Message "Connecting to Exchange Online.."
+
+                # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+                $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
+                $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
+                $exchangeSessionParams = @{
+                    Credential       = $credential
+                    CommandName      = $commands
+                    ShowBanner       = $false
+                    ShowProgress     = $false
+                    TrackPerformance = $false
+                    ErrorAction      = 'Stop'
+                }
+                $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+
+                Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
+            }
+            else {
+                Hid-Write-Status -Event Information -Message "Already connected to Exchange Online"
+            }
+        }
+        catch {
+            if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
+                $errorMessage = "$($_.Exception.InnerExceptions)"
+            }
+            else {
+                $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
+            }
+            Hid-Write-Status -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
+            Hid-Write-Summary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
+        }
+
         # Add Send As Permissions
         $parameters = @{
             Identity        = $groupName
-            Member          = $groupmember
+            Member          = $groupMember
             BypassSecurityGroupManagerCheck    = $true
         }
         $removePermission = Remove-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
@@ -832,7 +985,7 @@ function Remove-GroupMember {
 #endregion functions
 try {
     Hid-Write-Status -Event Information -Message "Removing user [$groupmember] from group [$groupName]"
-    $null = Remove-GroupMember -GroupName ($groupname.Split("-")[0].trim(" ")) -GroupMember $GroupMember
+    $null = Remove-GroupMember -GroupName $groupName -GroupMember $GroupMember
     Hid-Write-Status -Event Success -Message "Succesfully removed user [$groupmember] from group [$groupName]"
     Hid-Write-Summary -Event Success -Message "Succesfully removed user [$groupmember] from group [$groupName]"
 }
@@ -910,7 +1063,9 @@ $ApproveEmailAction = @{
 
 $ReturnEmailContent = '
 Dear Servicedesk,
+
 The product {{product.name}} has sucesfully been revoked for {{requester.fullName}}.
+
 Kind regards,
 HelloID
 '
@@ -955,16 +1110,85 @@ $ReturnEmailAction = @{
 
 #region script
 try {
+    # Import module
+    $moduleName = "ExchangeOnlineManagement"
+    $commands = @(
+        "Get-User",
+        "Get-DistributionGroup",
+        "Add-DistributionGroupMember",
+        "Remove-DistributionGroupMember",
+        "Get-EXOMailbox",
+        "Add-MailboxPermission",
+        "Add-RecipientPermission",
+        "Set-Mailbox",
+        "Remove-MailboxPermission",
+        "Remove-RecipientPermission"
+    )
+ 
+    # If module is imported say that and do nothing
+    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
+        Write-HidStatus -Event Information -Message "Module $ModuleName is already imported."
+    }
+    else {
+        # If module is not imported, but available on disk then import
+        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
+            $module = Import-Module $ModuleName -Cmdlet $commands
+            Write-HidStatus -Event Information -Message "Imported module $ModuleName"
+        }
+        else {
+            # If the module is not imported, not available and not in the online gallery then abort
+            Write-HidStatus -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+            Write-HidSummary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
+        }
+    }
+ 
+    # Check if Exchange Connection already exists
     try {
-        Write-HidStatus -Event Information -Message "Connecting to Exchange Online"
+        $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
+        $connectedToExchange = $true
+    }
+    catch {
+        if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
+            $connectedToExchange = $false
+        }
+    }
+             
+    # Connect to Exchange
+    try {
+        if ($connectedToExchange -eq $false) {
+            Write-HidStatus -Event Information -Message "Connecting to Exchange Online.."
+ 
+            # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
+            $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
+            $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
+            $exchangeSessionParams = @{
+                Credential       = $credential
+                CommandName      = $commands
+                ShowBanner       = $false
+                ShowProgress     = $false
+                TrackPerformance = $false
+                ErrorAction      = 'Stop'
+            }
+            $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+ 
+            Write-HidStatus -Event Success -Message "Successfully connected to Exchange Online"
+        }
+        else {
+            Write-HidStatus -Event Information -Message "Already connected to Exchange Online"
+        }
+    }
+    catch {
+        if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
+            $errorMessage = "$($_.Exception.InnerExceptions)"
+        }
+        else {
+            $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
+        }
+        Write-HidStatus -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
+        Write-HidSummary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
+    }
 
-        # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-        $securePassword = ConvertTo-SecureString $ExchangeAdminPassword -AsPlainText -Force
-        $credential = [System.Management.Automation.PSCredential]::new($ExchangeAdminUsername, $securePassword)
-        $exchangeSession = Connect-ExchangeOnline -Credential $credential -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
-
-        Write-HidStatus -Event Success -Message "Successfully connected to Exchange Online"
-
+    try {
         # Only get Exchange Groups (Mail-enabled Security Group of Distribution Group)
         # Do not get all groups using "Get-Group", since we cannot manage Microsoft 365 or Security Groups (they have to be managed from Azure AD) 
         # Filter Cloud-Only groups (IsDirSynced -eq 'False')
@@ -1008,10 +1232,16 @@ try {
             Write-HidStatus -Event Success -Message "Succesfully queried Exchange groups. Result count: $($exchangeGroups.id.Count)"
 
         }
-
     }
     catch {
-        $PSCmdlet.ThrowTerminatingError($_)
+        if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
+            $errorMessage = "$($_.Exception.InnerExceptions)"
+        }
+        else {
+            $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
+        }
+        Write-HidStatus -Event Error -Message "Could not query Exchange Distribution Groups, error: $errorMessage"
+        Write-HidSummary -Event Failed -Message "Failed to query Exchange Distribution Groups, error: $_"
     }
     finally {
         Write-HidStatus -Event Information -Message "Disconnecting from Exchange Online"
@@ -1040,8 +1270,8 @@ try {
         $tempGroup | Add-Member @{
             CombinedUniqueId = $SKUPrefix + "$($group.$uniqueProperty)".Replace('-', '')
         }
-        # # Optional, override product name
-        # $tempGroup.name = $tempGroup.DisplayName
+        # Optional, override product name
+        $tempGroup.name = $tempGroup.DisplayName
 
         $targetGroupsList.Add($tempGroup)
     }
@@ -1137,7 +1367,8 @@ try {
                         if ($null -ne $helloIDUser) {
                             $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
                         }
-                    }else{
+                    }
+                    else {
                         # Check for group
                         $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
                         if ($null -ne $exchangeGroup) {
@@ -1152,8 +1383,8 @@ try {
         }
 
         $productBody = @{
-            Name                       = "$($product.name)"
-            Description                = "$TargetSystemName - $($product.name)"
+            Name                       = "$($product.displayName)"
+            Description                = "$TargetSystemName - $($product.displayName)"
             ManagedByGroupGUID         = $($resourceOwnerGroup.groupGuid)
             Categories                 = @($selfServiceCategory.name)
             ApprovalWorkflowName       = $SAProductWorkflow
@@ -1164,7 +1395,6 @@ try {
             IsAutoApprove              = $false
             IsAutoDeny                 = $false
             MultipleRequestOption      = 1
-            IsCommentable              = $true
             HasTimeLimit               = $false
             LimitType                  = 'Fixed'
             ManagerCanOverrideDuration = $true
@@ -1172,6 +1402,8 @@ try {
             OwnershipMaxDuration       = 90
             CreateDefaultEmailActions  = $true
             Visibility                 = $productVisibility
+            RequestCommentOption       = $productRequestCommentOption
+            ReturnOnUserDisable        = $returnProductOnUserDisable
             Code                       = $product.CombinedUniqueId
         } | ConvertTo-Json
         $selfServiceProduct = Set-HIDSelfServiceProduct -ProductJson $productBody
@@ -1236,8 +1468,10 @@ try {
 
             # Optional, set product properties to update (that are in response of get products: https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products)
             $newProduct = $TargetGroupsGrouped[$productToUpdate]
-            $overwriteProductBody.name = "$($newProduct.name)"
-            $overwriteProductBody.Description = "$TargetSystemName - $($newProduct.name)"
+            $overwriteProductBody.name = "$($newProduct.displayName)"
+            $overwriteProductBody.Description = "$TargetSystemName - $($newProduct.displayName)"
+            $overwriteProductBody.requestCommentOption = $productRequestCommentOption
+            $overwriteProductBody.ReturnOnUserDisable = $returnProductOnUserDisable
 
             # Check if resource owner group is specified and exists, if not create new group
             $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($overwriteProductBody.name) Resource Owners" } else { $SAProductResourceOwner }
@@ -1267,7 +1501,8 @@ try {
                             if ($null -ne $helloIDUser) {
                                 $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
                             }
-                        }else{
+                        }
+                        else {
                             # Check for group
                             $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
                             if ($null -ne $exchangeGroup) {
@@ -1341,4 +1576,4 @@ catch {
     Write-HidStatus -Message "Exception details: $($_.errordetails)" -Event Error
     Write-HidSummary -Message "Error synchronization of [$TargetSystemName] to HelloID products" -Event Failed
 }
-#endregio
+#endregion
