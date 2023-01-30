@@ -595,7 +595,7 @@ function Invoke-HIDRestmethod {
         Write-Verbose 'Setting authorization headers'
         $apiKeySecret = "$($portalApiKey):$($portalApiSecret)"
         $base64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($apiKeySecret))
-        $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+        $headers = [System.Collections.Generic.Dictionary[[String], [String]]]::new()
         $headers.Add("Authorization", "Basic $base64")
         $headers.Add("Content-Type", $ContentType)
 
