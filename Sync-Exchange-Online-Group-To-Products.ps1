@@ -52,12 +52,8 @@ $productRequestCommentOption = "Optional"
 $productAllowMultipleRequests = $false
 # Product icon. Fill in the name that you can also configure in a product [examples: "windows" or "group"]
 $productFaIcon = "address-book"
-# $productFaIcon = "group"
-# $productFaIcon = "envelope"
 # Product category. If the category is not found, the task will fail
 $productCategory = "Distribution groups"
-# $productCategory = "Teams omgeving"
-# $productCategory = "Mailbox"
 # Return product when a user is disabled in HelloID. If $true the product is automatically returned on disable.
 $productReturnOnUserDisable = $true
 # Remove product when group is not found. If $false product will be disabled
