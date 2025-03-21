@@ -1,567 +1,167 @@
 #####################################################
-# HelloID-SA-Sync-Exchange-Online-DistributionGroup-To-Products
+# HelloID-Conn-SA-Sync-Exchange-Online-DistributionGroup-To-SelfService-Products
 #
-# Version: 1.1.0.0
+# Version: 2.0.0
 #####################################################
-$VerbosePreference = 'SilentlyContinue'
-$informationPreference = 'Continue'
-$WarningPreference = 'Continue'
+$VerbosePreference = "SilentlyContinue"
+$informationPreference = "Continue"
+$WarningPreference = "Continue"
+
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
+# Set to false to acutally perform actions - Only run as DryRun when testing/troubleshooting!
+$dryRun = $false
+# Set to true to log each individual action - May cause lots of logging, so use with cause, Only run testing/troubleshooting!
+$verboseLogging = $false
 
 # Make sure to create the Global variables defined below in HelloID
 #HelloID Connection Configuration
-$portalApiKey = $portalApiKey
-$portalApiSecret = $portalApiSecret
-$script:BaseUrl = $portalBaseUrl
+# $script:PortalBaseUrl = "" # Set from Global Variable
+# $portalApiKey = "" # Set from Global Variable
+# $portalApiSecret = "" # Set from Global Variable
 
-#Target Connection Configuration     # Needed for accessing the Target System (These variables are also required for the Actions of each product)
-$ExchangeOnlineAdminUsername = $ExchangeAdminUsername
-$ExchangeOnlineAdminPassword = $ExchangeAdminPassword
-$Filter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided ($Filter = $null), all Cloud Distribution Groups will be queried
+# Exchange Online Connection Configuration
+# $EntraOrganization = "" # Set from Global Variable
+# $EntraTenantID = "" # Set from Global Variable
+# $EntraAppID = "" # Set from Global Variable
+# $EntraAppSecret = "" # Set from Global Variable
+$exchangeGroupsFilter = "DisplayName -like 'DistributionGroup*'" # Optional, when no filter is provided ($exchangeGroupsFilter = $null), all groups will be queried
 
-#HelloID Product Configuration
-$ProductAccessGroup = 'Users'           # If not found, the product is created without extra Access Group
-$ProductCategory = 'Distribution Groups'   # If the category is not found, it will be created
-$SAProductResourceOwner = ''            # If left empty the groupname will be: "Resource owners [target-systeem] - [Product_Naam]")
-$SAProductWorkflow = $null              # If empty. The Default HelloID Workflow is used. If specified Workflow does not exist the Product creation will raise an error.
-$FaIcon = 'group'
-$productVisibility = 'All'
-$productRequestCommentOption = 'Hidden' # Define if comments can be added when requesting the product. Supported options: Optional, Hidden, Required
-$returnProductOnUserDisable = $true # If True the product will be returned when the user owning the product gets disabled
+# PowerShell commands to import
+$commands = @(
+    "Get-User"
+    , "Get-DistributionGroup"
+) # Fixed list of commands required by script - only change when missing commands
 
-$setDistributionGroupOwnerAsResourceOwner = $true # If True the owner(s) of the Distribution Group will be set as the Resource owner of the corresponding HelloID Self service Product. The user(s) and group(s) have to exist in HelloID to be able to be added to the Resource Owner group
+######################################################################################
+#HelloID Self service Product Configuration
+######################################################################################
 
-$removeProduct = $true                  # If False product will be disabled
-$overwriteExistingProduct = $false       # If True existing product will be overwritten with the input from this script (e.g. the approval worklow or icon). Only use this when you actually changed the product input
-$overwriteExistingProductAction = $false # If True existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
+######################################################################################
+# Default configuration
+# Determine group that give access to the synct products. If not found, the product is created without extra Access Group
+$productAccessGroup = "Local/__HelloID Selfservice Users" 
+# Product approval workflow. Fill in the GUID of the workflow If empty, the Default HelloID Workflow is used. If specified Workflow does not exist the Product creation will raise an error.
+$productApprovalWorkflowId = "6a7e9e2c-f032-4121-9ed2-6135179d8d91" # Tip open the Approval workflow in HelloID, the GUID can be found in the browser URL
+# Product Visibility. If empty, "Disabled" is used. Supported options: All, ResourceOwnerAndManager, ResourceOwner, Disabled
+$productVisibility = "All"
+# Product comment option. If empty, "Optional" is used. Supported options: Optional, Hidden, Required
+$productRequestCommentOption = "Optional"
+# Products can be requested unlimited times. If $false the product can be only requested once
+$productAllowMultipleRequests = $false
+# Product icon. Fill in the name that you can also configure in a product [examples: "windows" or "group"]
+$productFaIcon = "address-book"
+# Product category. If the category is not found, the task will fail
+$productCategory = "Distribution groups"
+# Return product when a user is disabled in HelloID. If $true the product is automatically returned on disable.
+$productReturnOnUserDisable = $true
+# Remove product when group is not found. If $false product will be disabled
+$removeProduct = $true
+######################################################################################
 
+######################################################################################
+# Configuration option 1
+# Sync will add the same resourceowner group to every product [value = $false].
+$calculateProductResourceOwnerPrefixSuffix = $false # Comment out if not used
+# Product resource owner group
+$productResourseOwner = "Local/HelloID EntraID Distribution Groups Product Owners"
+######################################################################################
 
-#Target System Configuration
+######################################################################################
+# Configuration option 2
+# Sync will add a different resourceowner group to every product. Members in this group are not filled with this sync [value = $true].
+# $calculateProductResourceOwnerPrefixSuffix = $true # Comment out if not used
+# Type of group that will be created if not found [value = "AzureAD" or "Local"]
+$calculatedResourceOwnerGroupSource = "Local"
+# Set a prefix before the queried Entra ID group name. If not found the group will be created. [Filling Prefix or Suffix is a mimimum requerement for option 2]
+$calculatedResourceOwnerGroupPrefix = ""
+# Set a suffix after the queried Entra ID group name. If not found the group will be created. [Filling Prefix or Suffix is a mimimum requerement for option 2]
+$calculatedResourceOwnerGroupSuffix = " - Owner"
+######################################################################################
+
+#######################################################################################
+# Administrator configuration
+# If $true existing product will be overwritten with the input from this script (e.g. the, description, approval worklow or icon). Only use this when you actually changed the product input
+$overwriteExistingProduct = $false
+# If $true existing product actions will be overwritten with the input from this script. Only use this when you actually changed the script or variables for the action(s)
+$overwriteExistingProductAction = $false # Note: Actions are always overwritten, no compare takes place between the current actions and the actions this sync would set
+# If $true missing product actions (according to the the input from this script) will be added
+$addMissingProductAction = $false 
+# Should be on false by default, only set this to true to overwrite product access group - Only meant for "manual" bulk update, not daily scheduled
+$overwriteAccessGroup = $false # Note: Access group is always overwritten, no compare takes place between the current access group and the access group this sync would set
+#######################################################################################
+
+#######################################################################################
 # Dynamic property invocation
-$uniqueProperty = 'GUID'              # The vaule of the property will be used as CombinedUniqueId
+# The prefix will be used as the first part HelloID Self service Product SKU. Please make sure this value is the same in all related sync scripts
+$ProductSkuPrefix = "EXOGRP"
+# The value of the property will be used as HelloID Self service Product SKU. Please make sure this value is the same in all related sync scripts
+$exchangeGroupUniqueProperty = "GUID"
+#######################################################################################
 
-# [ValidateLength(4)]
-$SKUPrefix = 'EXOG'                   # The prefix will be used as CombinedUniqueId. Max. 4 characters
-$TargetSystemName = 'Exchange DistributionGroup'
-
-$includeEmailAction = $true
-$defaultFromAddress = "no-reply@helloid.com"
-$defaultToAddress = "j.doe@eyoi.org"
-
-#region HelloID
-function Get-HIDDefaultAgentPool {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003036494-GET-Get-agent-pools
-    #>
-    [CmdletBinding()]
-    param ()
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'GET'
-            Uri    = 'agentpools'
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Get-HIDSelfServiceProduct {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products
-    #>
-    [CmdletBinding()]
-    param ()
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'GET'
-            Uri    = 'selfservice/products'
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Get-HIDSelfServiceProductAction {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products
-    #>
-    [CmdletBinding()]
-    param ()
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'GET'
-            Uri    = 'automationtasks'
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Get-HIDSelfServiceCategory {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003036194-GET-Get-self-service-categories
-    #>
-    [CmdletBinding()]
-    param ()
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'GET'
-            Uri    = 'selfservice/categories'
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Set-HIDSelfServiceProduct {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003038854-POST-Create-or-update-a-product
-    #>
+#region functions
+function Resolve-HTTPError {
     [CmdletBinding()]
     param (
-        $ProductJson
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
     )
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Body   = $ProductJson
-            Method = 'POST'
-            uri    = 'selfservice/products'
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ""
         }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
+
+        if ($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") {
+            # $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message # Does not show the correct error message for the Raet IAM API calls
+            $httpErrorObj.ErrorMessage = $ErrorObject.Exception.Message
+
+        }
+        elseif ($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException") {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
+        }
+
+        Write-Output $httpErrorObj
     }
 }
 
-function New-HIDSelfServiceCategory {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003024773-POST-Create-self-service-category
-    #>
+function Get-ErrorMessage {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory)]
-        [string]
-        $Name,
-
-        [string]
-        $SelfServiceCategoryGUID,
-
-        [bool]
-        $IsEnabled
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
     )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $category = [ordered]@{
-            "name"                    = $Name
-            "SelfServiceCategoryGUID" = $SelfServiceCategoryGUID
-            "isEnabled"               = $IsEnabled
-        } | ConvertTo-Json
-
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = 'selfservice/categories'
-            Body   = $category
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Remove-HIDSelfServiceProduct {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003038654-DELETE-Delete-product
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]
-        $ProductGUID
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'DELETE'
-            Uri    = "selfservice/products/$ProductGUID"
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDPowerShellAction {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/360013035680-POST-Create-or-update-PowerShell-task
-    #>
-    [CmdletBinding()]
-    param(
-        $body
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = 'automationtasks/powershell'
-            Body   = $body
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDEmailAction {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003036854-POST-Create-e-mail-action
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]
-        $ProductGUID,
-
-        [Parameter(Mandatory)]
-        $body
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = "selfservice/products/$($ProductGUID)/emailaction"
-            Body   = $body
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Remove-HIDAction {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003037034-DELETE-Delete-action
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]
-        $ActionGUID
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-
-        $splatParams = @{
-            Method = 'DELETE'
-            Uri    = "selfservice/actions/$ActionGUID"
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
-    }
-}
-
-
-function New-HIDGroup {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115003038654-DELETE-Delete-product
-    #>
-    [Cmdletbinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]
-        $GroupName,
-
-        [bool]
-        $isEnabled
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $groupBody = @{
-            name      = $GroupName
-            isEnabled = $isEnabled
-            userNames = ''
-        } | ConvertTo-Json
-
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = 'groups'
-            Body   = $groupBody
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-
-function Get-HIDGroup {
-    <#
-    .DESCRIPTION
-       https://docs.helloid.com/hc/en-us/articles/115002981813-GET-Get-specific-group
-    #>
-    [Cmdletbinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]
-        $GroupName
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'GET'
-            Uri    = "groups/$groupname"
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        if ($_.ErrorDetails.Message -match 'Group not found') {
-            return $null
-        }
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Get-HIDGroups {
-    <#
-    .DESCRIPTION
-       https://docs.helloid.com/hc/en-us/articles/115002994414-GET-Get-groups
-    #>
-    [Cmdletbinding()]
-    param(
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-
-        $splatParams = @{
-            Method   = 'GET'
-            Uri      = "groups"
-            PageSize = 1000
+    process {
+        $errorMessage = [PSCustomObject]@{
+            VerboseErrorMessage = $null
+            AuditErrorMessage   = $null
         }
 
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
+        if ( $($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") -or $($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException")) {
+            $httpErrorObject = Resolve-HTTPError -Error $ErrorObject
 
+            $errorMessage.VerboseErrorMessage = $httpErrorObject.ErrorMessage
 
-function Get-HIDUsers {
-    <#
-    .DESCRIPTION
-       https://docs.helloid.com/hc/en-us/articles/115002969074-GET-Get-all-users
-    #>
-    [Cmdletbinding()]
-    param(
-        [System.Nullable[boolean]]
-        $IsEnabled = $null,
-
-        [System.Nullable[boolean]]
-        $IsDeleted = $null
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-
-        $splatParams = @{
-            Method   = 'GET'
-            Uri      = "users"
-            PageSize = 1000
+            $errorMessage.AuditErrorMessage = $httpErrorObject.ErrorMessage
         }
 
-        if ($null -ne $IsEnabled) {
-            if ($splatParams.Uri -match '\?') {
-                $splatParams.Uri = $splatParams.Uri + "&enabled=$($IsEnabled)"
-            }
-            else {
-                $splatParams.Uri = $splatParams.Uri + "?enabled=$($IsEnabled)"
-            }
+        # If error message empty, fall back on $ex.Exception.Message
+        if ([String]::IsNullOrEmpty($errorMessage.VerboseErrorMessage)) {
+            $errorMessage.VerboseErrorMessage = $ErrorObject.Exception.Message
         }
-        if ($null -ne $isDeleted) {
-            if ($splatParams.Uri -match '\?') {
-                $splatParams.Uri = $splatParams.Uri + "&isDeleted=$($IsDeleted)"
-            }
-            else {
-                $splatParams.Uri = $splatParams.Uri + "?isDeleted=$($IsDeleted)"
-            }
+        if ([String]::IsNullOrEmpty($errorMessage.AuditErrorMessage)) {
+            $errorMessage.AuditErrorMessage = $ErrorObject.Exception.Message
         }
 
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDProductMember {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115002954633-POST-Link-member-to-group
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]
-        $selfServiceProductGUID,
-
-        [Parameter(Mandatory)]
-        [string]
-        $MemberGUID
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = "selfserviceproducts/$selfServiceProductGUID/groups"
-            Body   = @{
-                groupGUID = $MemberGUID
-            } | ConvertTo-Json
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDGroupMemberUser {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115002954633-POST-Link-member-to-group
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]
-        $GroupGUID,
-
-        [Parameter(Mandatory)]
-        [string]
-        $MemberGUID
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = "groups/$GroupGUID/users"
-            Body   = @{
-                UserGUID = $MemberGUID
-            } | ConvertTo-Json
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDGroupMemberGroup {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115002954633-POST-Link-member-to-group
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]
-        $GroupGUID,
-
-        [Parameter(Mandatory)]
-        [string]
-        $MemberGUID
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatParams = @{
-            Method = 'POST'
-            Uri    = "groups/$GroupGUID/membergroups"
-            Body   = @{
-                groupGUID = $MemberGUID
-            } | ConvertTo-Json
-        }
-        Invoke-HIDRestMethod @splatParams
-    }
-    catch {
-        $Pscmdlet.ThrowTerminatingError($_)
-    }
-}
-
-function Add-HIDUserGroup {
-    <#
-    .DESCRIPTION
-        https://docs.helloid.com/hc/en-us/articles/115002954493-POST-Link-group-to-member
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter()]
-        [string]
-        $UserName,
-
-        [Parameter()]
-        [String]
-        $GroupGuid
-    )
-
-    try {
-        Write-Verbose "Invoking command '$($MyInvocation.MyCommand)'"
-        $splatRestParameters = @{
-            Method = 'POST'
-            Uri    = "users/$UserName/groups"
-            Body   = @{
-                groupGUID = $GroupGuid
-            } | ConvertTo-Json
-        }
-        Invoke-HIDRestMethod @splatRestParameters
-    }
-    catch {
-        $PSCmdlet.ThrowTerminatingError($_)
+        Write-Output $errorMessage
     }
 }
 
@@ -581,1000 +181,1447 @@ function Invoke-HIDRestmethod {
         [object]
         $Body,
 
-        [string]
-        $ContentType = 'application/json',
+        [Parameter(Mandatory = $false)]
+        $PageSize,
 
-        [System.Nullable[int]]
-        $PageSize = $null
+        [string]
+        $ContentType = "application/json"
     )
 
     try {
-        Write-Verbose 'Switching to TLS 1.2'
+        Write-Verbose "Switching to TLS 1.2"
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
-        Write-Verbose 'Setting authorization headers'
+        Write-Verbose "Setting authorization headers"
         $apiKeySecret = "$($portalApiKey):$($portalApiSecret)"
         $base64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($apiKeySecret))
         $headers = [System.Collections.Generic.Dictionary[[String], [String]]]::new()
         $headers.Add("Authorization", "Basic $base64")
         $headers.Add("Content-Type", $ContentType)
+        $headers.Add("Accept", $ContentType)
 
         $splatParams = @{
-            Uri     = "$($script:BaseUrl)/api/v1/$Uri"
-            Headers = $headers
-            Method  = $Method
+            Uri         = "$($script:PortalBaseUrl)/api/v1/$($Uri)"
+            Headers     = $headers
+            Method      = $Method
+            ErrorAction = "Stop"
         }
+        
+        if (-not[String]::IsNullOrEmpty($PageSize)) {
+            $data = [System.Collections.ArrayList]@()
 
-        if ($null -ne $PageSize) {
             $skip = 0
             $take = $PageSize
+            Do {
+                $splatParams["Uri"] = "$($script:PortalBaseUrl)/api/v1/$($Uri)?skip=$($skip)&take=$($take)"
 
-            $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
-            if ($splatParams.Uri -match '\?') {
-                $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
-            }
-            else {
-                $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
-            }
-            Write-Verbose "Invoking '$Method' request to '$Uri'"
-            $tempResult = Invoke-RestMethod @splatParams
-            $result = $tempResult
-
-            while ($tempResult.Count -eq $take) {
-                $skip += $take
-
-                $splatParams.Uri = "$($script:BaseUrl)/api/v1/$Uri"
-                if ($splatParams.Uri -match '\?') {
-                    $splatParams.Uri = $splatParams.Uri + "&skip=$Skip" + "&take=$take"
+                Write-Verbose "Invoking [$Method] request to [$Uri]"
+                $response = $null
+                $response = Invoke-RestMethod @splatParams
+                if (($response.PsObject.Properties.Match("pageData") | Measure-Object).Count -gt 0) {
+                    $dataset = $response.pageData
                 }
                 else {
-                    $splatParams.Uri = $splatParams.Uri + "?skip=$Skip" + "&take=$take"
+                    $dataset = $response
                 }
-        
-                Write-Verbose "Invoking '$Method' request to '$Uri'"
-                $tempResult = Invoke-RestMethod @splatParams
-                $result += $tempResult
-            }            
+
+                if ($dataset -is [array]) {
+                    [void]$data.AddRange($dataset)
+                }
+                else {
+                    [void]$data.Add($dataset)
+                }
+            
+                $skip += $take
+            }until(($dataset | Measure-Object).Count -ne $take)
+
+            return $data
         }
         else {
             if ($Body) {
-                Write-Verbose 'Adding body to request'
-                $splatParams['Body'] = ([System.Text.Encoding]::UTF8.GetBytes($Body))
+                Write-Verbose "Adding body to request"
+                $splatParams["Body"] = ([System.Text.Encoding]::UTF8.GetBytes($body))
             }
 
-            Write-Verbose "Invoking '$Method' request to '$Uri'"
-            $result = Invoke-RestMethod @splatParams
+            Write-Verbose "Invoking [$Method] request to [$Uri]"
+            $response = $null
+            $response = Invoke-RestMethod @splatParams
+
+            return $response
         }
 
-        Write-Output $result
     }
     catch {
-        $PSCmdlet.ThrowTerminatingError($_)
+        throw $_
     }
 }
-
-function Write-HidStatus {
-    [CmdletBinding()]
-    param(
-        [Parameter()]
-        [string]
-        $Message,
-
-        [Parameter()]
-        [String]
-        $Event
-    )
-    if ([String]::IsNullOrEmpty($portalBaseUrl)) {
-        Write-Information $Message
-    }
-    else {
-        Hid-Write-Status -Message $Message -Event $Event
-    }
-}
-
-function Write-HidSummary {
-    [CmdletBinding()]
-    param(
-        [Parameter()]
-        [string]
-        $Message,
-
-        [Parameter()]
-        [String]
-        $Event
-    )
-
-    if ([String]::IsNullOrEmpty($portalBaseUrl) -eq $true) {
-        Write-Output ($Message)
-    }
-    else {
-        Hid-Write-Summary -Message $Message -Event $Event
-    }
-}
-
-function Compare-Join {
-    [OutputType([array], [array], [array])]
-    param(
-        [parameter()]
-        [string[]]$ReferenceObject,
-
-        [parameter()]
-        [string[]]$DifferenceObject
-    )
-    if ($null -eq $DifferenceObject) {
-        $Left = $ReferenceObject
-    }
-    elseif ($null -eq $ReferenceObject ) {
-        $right = $DifferenceObject
-    }
-    else {
-        $left = [string[]][Linq.Enumerable]::Except($ReferenceObject, $DifferenceObject )
-        $right = [string[]][Linq.Enumerable]::Except($DifferenceObject, $ReferenceObject)
-        $common = [string[]][Linq.Enumerable]::Intersect($ReferenceObject, $DifferenceObject)
-    }
-    Write-Output $Left , $Right, $common
-}
-
-#endregion HelloID
+#endregion functions
 
 #region HelloId_Actions_Variables
-#region GroupMemberships
-$AddGroupMembership = @'
+#region Add Permission script
+<# First use a double-quoted here-string, where variables are replaced by their values here string (to be able to use a variable) #>
+$addPermissionScript = @"
+`$DistributionGroup = [Guid]::New((`$product.code.replace("$ProductSkuPrefix","")))
+
+"@
+<# Then use a single-quoted here-string, where variables are interpreted literally and reproduced exactly #> 
+$addPermissionScript = $addPermissionScript + @'
+$User = $request.requestedFor.userName
+$AutoMapping = $true
+
+# Exchange Online Connection Configuration
+# $EntraOrganization = "" # Set from Global Variable
+# $EntraTenantID = "" # Set from Global Variable
+# $EntraAppID = "" # Set from Global Variable
+# $EntraAppSecret = "" # Set from Global Variable
+
+# PowerShell commands to import
+$commands = @(
+    "Get-User"
+    , "Get-DistributionGroup"
+    , "Add-DistributionGroupMember"
+)
+
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
+# Set debug logging
+$VerbosePreference = "SilentlyContinue"
+$InformationPreference = "Continue"
+$WarningPreference = "Continue"
+
 #region functions
-function Add-GroupMember {
+function Resolve-HTTPError {
     [CmdletBinding()]
     param (
-        [Parameter()]
-        [string]
-        $GroupName,
-        [Parameter()]
-        [String]
-        $groupmember
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
     )
-    try {
-        # Import module
-        $moduleName = "ExchangeOnlineManagement"
-        $commands = @(
-            "Get-User",
-            "Get-DistributionGroup",
-            "Add-DistributionGroupMember",
-            "Remove-DistributionGroupMember",
-            "Get-EXOMailbox",
-            "Add-MailboxPermission",
-            "Add-RecipientPermission",
-            "Set-Mailbox",
-            "Remove-MailboxPermission",
-            "Remove-RecipientPermission"
-        )
-
-        # If module is imported say that and do nothing
-        if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-            Hid-Write-Status -Event Information -Message "Module $ModuleName is already imported."
-        }
-        else {
-            # If module is not imported, but available on disk then import
-            if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-                $module = Import-Module $ModuleName -Cmdlet $commands
-                Hid-Write-Status -Event Information -Message "Imported module $ModuleName"
-            }
-            else {
-                # If the module is not imported, not available and not in the online gallery then abort
-                Hid-Write-Status -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-                Hid-Write-Summary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-            }
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ""
         }
 
-        # Check if Exchange Connection already exists
-        try {
-            $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
-            $connectedToExchange = $true
-        }
-        catch {
-            if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
-                $connectedToExchange = $false
-            }
-        }
-            
-        # Connect to Exchange
-        try {
-            if ($connectedToExchange -eq $false) {
-                Hid-Write-Status -Event Information -Message "Connecting to Exchange Online.."
+        if ($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") {
+            # $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message # Does not show the correct error message for the Raet IAM API calls
+            $httpErrorObj.ErrorMessage = $ErrorObject.Exception.Message
 
-                # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-                $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
-                $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
-                $exchangeSessionParams = @{
-                    Credential       = $credential
-                    CommandName      = $commands
-                    ShowBanner       = $false
-                    ShowProgress     = $false
-                    TrackPerformance = $false
-                    ErrorAction      = 'Stop'
-                }
-                $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
-
-                Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
-            }
-            else {
-                Hid-Write-Status -Event Information -Message "Already connected to Exchange Online"
-            }
         }
-        catch {
-            if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
-                $errorMessage = "$($_.Exception.InnerExceptions)"
-            }
-            else {
-                $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
-            }
-            Hid-Write-Status -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
-            Hid-Write-Summary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
+        elseif ($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException") {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
         }
 
-        # Add Send As Permissions
-        $parameters = @{
-            Identity        = $groupName
-            Member          = $groupMember
-            BypassSecurityGroupManagerCheck    = $true
-        }
-        $addPermission = Add-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
+        Write-Output $httpErrorObj
     }
-    catch {
-        if($_ -like "*already a member of the group*"){
-            Hid-Write-Status -Event Warning -Message "The recipient $($parameters.Member) is already a member of the group $($parameters.Identity)"
-        }else{
-            $PSCmdlet.ThrowTerminatingError($_)
+}
+
+function Get-ErrorMessage {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $errorMessage = [PSCustomObject]@{
+            VerboseErrorMessage = $null
+            AuditErrorMessage   = $null
         }
-    }
-    finally {
-        Hid-Write-Status -Event Information -Message "Disconnecting from Exchange Online"
-        Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
-        Hid-Write-Status -Event Success -Message "Successfully disconnected from Exchange Online"
+
+        if ( $($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") -or $($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException")) {
+            $httpErrorObject = Resolve-HTTPError -Error $ErrorObject
+
+            $errorMessage.VerboseErrorMessage = $httpErrorObject.ErrorMessage
+
+            $errorMessage.AuditErrorMessage = $httpErrorObject.ErrorMessage
+        }
+
+        # If error message empty, fall back on $ex.Exception.Message
+        if ([String]::IsNullOrEmpty($errorMessage.VerboseErrorMessage)) {
+            $errorMessage.VerboseErrorMessage = $ErrorObject.Exception.Message
+        }
+        if ([String]::IsNullOrEmpty($errorMessage.AuditErrorMessage)) {
+            $errorMessage.AuditErrorMessage = $ErrorObject.Exception.Message
+        }
+
+        Write-Output $errorMessage
     }
 }
 #endregion functions
+
+# Import module
 try {
-    Hid-Write-Status -Event Information -Message "Adding user [$groupmember] to group [$groupName]"
-    $null = Add-GroupMember -GroupName $groupName -GroupMember $GroupMember
-    Hid-Write-Status -Event Success -Message "Succesfully added user [$groupmember] to group [$groupName]"
-    Hid-Write-Summary -Event Success -Message "Succesfully added user [$groupmember] to group [$groupName]"
+    $moduleName = "ExchangeOnlineManagement"
+    $importModule = Import-Module -Name $moduleName -ErrorAction Stop
 }
 catch {
-    Hid-Write-Status -Message  "Could not add user [$groupmember] to group [$groupName]. Error: $($_.Exception.Message)" -Event Error
-    Hid-Write-Summary -Message "Could not add user [$groupmember] to group [$groupName]" -Event Failed
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error importing module [$moduleName]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Connect to Exchange
+try {
+    # Create access token
+    Write-Verbose "Creating Access Token"
+
+    $baseUri = "https://login.microsoftonline.com/"
+    $authUri = $baseUri + "$EntraTenantID/oauth2/token"
+  
+    $body = @{
+        grant_type    = "client_credentials"
+        client_id     = "$EntraAppID"
+        client_secret = "$EntraAppSecret"
+        resource      = "https://outlook.office365.com"
+    }
+  
+    $Response = Invoke-RestMethod -Method POST -Uri $authUri -Body $body -ContentType "application/x-www-form-urlencoded" -UseBasicParsing:$true
+    $accessToken = $Response.access_token
+
+    # Connect to Exchange Online in an unattended scripting scenario using an access token.
+    Write-Verbose "Connecting to Exchange Online"
+
+    $exchangeSessionParams = @{
+        Organization     = $EntraOrganization
+        AppID            = $EntraAppID
+        AccessToken      = $accessToken
+        CommandName      = $commands
+        ShowBanner       = $false
+        ShowProgress     = $false
+        TrackPerformance = $false
+        ErrorAction      = "Stop"
+    }
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+  
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($errorMessage.VerboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Query Exchange user (to use object in further actions)
+try {
+    # More information about the cmdlet and the supported parameters: https://learn.microsoft.com/en-us/powershell/module/exchange/get-user?view=exchange-ps
+    $queryExchangeUserSplatParams = @{
+        Identity    = "$User"
+        ErrorAction = "Stop" # Makes sure the action enters the catch when an error occurs
+    }
+
+    Write-Verbose "Querying Exchange user [$($queryExchangeUserSplatParams.Identity)]"
+
+    $exchangeUser = Get-User @queryExchangeUserSplatParams
+  
+    # Check result count, and throw error when no results are found.
+    if (($exchangeUser | Measure-Object).Count -eq 0) {
+        throw "Exchange user [$($queryExchangeUserSplatParams.Filter)] not found that"
+    }
+
+    Write-Information "Successfully queried Exchange user [$($queryExchangeUserSplatParams.Identity)]. DisplayName: [$($exchangeUser.DisplayName)], Guid: [$($exchangeUser.guid)], Identity: [$($exchangeUser.Identity)]"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Exchange user [$($queryExchangeUserSplatParams.Identity)]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Query Distribution group (to use object in further actions)
+try {
+    # More information about the cmdlet and the supported parameters: https://learn.microsoft.com/en-us/powershell/module/exchange/get-group?view=exchange-ps
+    $queryexchangeDistributionGroupSplatParams = @{
+        Identity    = "$DistributionGroup"
+        ErrorAction = "Stop" # Makes sure the action enters the catch when an error occurs
+    }
+
+    Write-Verbose "Querying Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]"
+
+    $exchangeDistributionGroup = Get-DistributionGroup @queryexchangeDistributionGroupSplatParams
+  
+    # Check result count, and throw error when no results are found.
+    if (($exchangeDistributionGroup | Measure-Object).Count -eq 0) {
+        throw "Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)] not found"
+    }
+
+    Write-Information "Successfully queried Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]. DisplayName: [$($exchangeDistributionGroup.DisplayName)], Guid: [$($exchangeDistributionGroup.guid)], Identity: [$($exchangeDistributionGroup.Identity)]"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Add Permissions for Exchange user to Distribution group
+try {
+    # Microsoft docs: https://learn.microsoft.com/en-us/powershell/module/exchange/add-distributiongroupmember?view=exchange-ps
+    $addPermissionSplatParams = @{
+        Identity                        = $exchangeDistributionGroup
+        Member                          = $exchangeUser
+        BypassSecurityGroupManagerCheck = $true
+        Confirm                         = $false
+        Verbose                         = $false
+        ErrorAction                     = "Stop"
+    }
+
+    Write-Verbose "Granting permission for user [$($addPermissionSplatParams.Member.DisplayName)] to distribution group [$($addPermissionSplatParams.Identity.DisplayName)]"
+
+    $addPermission = Add-DistributionGroupMember @addPermissionSplatParams
+
+    Write-Information "Successfully granted permission for user [$($addPermissionSplatParams.Member.DisplayName)] to distribution group [$($addPermissionSplatParams.Identity.DisplayName)]"
+
+    $Log = @{
+        Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+        System            = "ExchangeOnline" # optional (free format text) 
+        Message           = "Successfully granted permission for user [$($addPermissionSplatParams.Member.DisplayName)] to distribution group [$($addPermissionSplatParams.Identity.DisplayName)]" # required (free format text) 
+        IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+        TargetDisplayName = $addPermissionSplatParams.Member.DisplayName # optional (free format text)
+        TargetIdentifier  = $addPermissionSplatParams.Member.Identity # optional (free format text)
+    }
+    #send result back  
+    Write-Information -Tags "Audit" -MessageData $log
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+        
+    if ($errorMessage.AuditErrorMessage -like "*Microsoft.Exchange.Management.Tasks.MemberAlreadyExistsException*") {
+        Write-Information "User [$($addPermissionSplatParams.Member.DisplayName)] is already member of distribution group [$($addPermissionSplatParams.Identity.DisplayName)]"
+
+        $Log = @{
+            Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+            System            = "ExchangeOnline" # optional (free format text) 
+            Message           = "User [$($addPermissionSplatParams.Member.DisplayName)] is already member of distribution group [$($addPermissionSplatParams.Identity.DisplayName)]" # required (free format text) 
+            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = $addPermissionSplatParams.Member.DisplayName # optional (free format text)
+            TargetIdentifier  = $addPermissionSplatParams.Member.Identity # optional (free format text)
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
+    } 
+    else {
+        Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($errorMessage.VerboseErrorMessage)"
+        
+        $Log = @{
+            Action            = "GrantMembership" # optional. ENUM (undefined = default) 
+            System            = "ExchangeOnline" # optional (free format text) 
+            Message           = "Error granting permission for user [$($addPermissionSplatParams.Member.DisplayName)] to distribution group [$($addPermissionSplatParams.Identity.DisplayName)]. Error Message: $($errorMessage.AuditErrorMessage)" # required (free format text) 
+            IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = $addPermissionSplatParams.Member.DisplayName # optional (free format text)
+            TargetIdentifier  = $addPermissionSplatParams.Member.Identity # optional (free format text)
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
+
+        throw "Error granting permission for user [$($addPermissionSplatParams.Member.DisplayName)] to distribution group [$($addPermissionSplatParams.Identity.DisplayName)]. Error Message: $($errorMessage.AuditErrorMessage)"
+    }
 }
 '@
-$AddGroupMembershipAction = @{
-    name                = 'Add-GroupMembership'
-    automationContainer = 2
-    objectGUID          = $null
-    metaData            = '{"executeOnState":3}'
-    useTemplate         = $false
-    powerShellScript    = $AddGroupMembership
-    variables           = @(
-        @{
-            "name"           = "GroupName"
-            "value"          = "{{product.name}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "GroupMember"
-            "value"          = "{{requester.username}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        }
-    )
-}
+#endregion Add Permission script
 
-$RemoveGroupMembership = @'
+#region Remove Permission script
+<# First use a double-quoted here-string, where variables are replaced by their values here string (to be able to use a variable) #>
+$removePermissionScript = @"
+`$DistributionGroup = [Guid]::New((`$product.code.replace("$ProductSkuPrefix","")))
+
+"@
+<# Then use a single-quoted here-string, where variables are interpreted literally and reproduced exactly #> 
+$removePermissionScript = $removePermissionScript + @'
+$User = $request.requestedFor.userName
+$AutoMapping = $true
+
+# Exchange Online Connection Configuration
+# $EntraOrganization = "" # Set from Global Variable
+# $EntraTenantID = "" # Set from Global Variable
+# $EntraAppID = "" # Set from Global Variable
+# $EntraAppSecret = "" # Set from Global Variable
+
+# PowerShell commands to import
+$commands = @(
+    "Get-User"
+    , "Get-DistributionGroup"
+    , "Remove-DistributionGroupMember"
+)
+
+# Set TLS to accept TLS, TLS 1.1 and TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
+
+# Set debug logging
+$VerbosePreference = "SilentlyContinue"
+$InformationPreference = "Continue"
+$WarningPreference = "Continue"
+
 #region functions
-function Remove-GroupMember {
+function Resolve-HTTPError {
     [CmdletBinding()]
     param (
-        [Parameter()]
-        [string]
-        $GroupName,
-        [Parameter()]
-        [String]
-        $groupmember
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
     )
-    try {
-        # Import module
-        $moduleName = "ExchangeOnlineManagement"
-        $commands = @(
-            "Get-User",
-            "Get-DistributionGroup",
-            "Add-DistributionGroupMember",
-            "Remove-DistributionGroupMember",
-            "Get-EXOMailbox",
-            "Add-MailboxPermission",
-            "Add-RecipientPermission",
-            "Set-Mailbox",
-            "Remove-MailboxPermission",
-            "Remove-RecipientPermission"
-        )
-
-        # If module is imported say that and do nothing
-        if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-            Hid-Write-Status -Event Information -Message "Module $ModuleName is already imported."
-        }
-        else {
-            # If module is not imported, but available on disk then import
-            if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-                $module = Import-Module $ModuleName -Cmdlet $commands
-                Hid-Write-Status -Event Information -Message "Imported module $ModuleName"
-            }
-            else {
-                # If the module is not imported, not available and not in the online gallery then abort
-                Hid-Write-Status -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-                Hid-Write-Summary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-            }
+    process {
+        $httpErrorObj = [PSCustomObject]@{
+            FullyQualifiedErrorId = $ErrorObject.FullyQualifiedErrorId
+            MyCommand             = $ErrorObject.InvocationInfo.MyCommand
+            RequestUri            = $ErrorObject.TargetObject.RequestUri
+            ScriptStackTrace      = $ErrorObject.ScriptStackTrace
+            ErrorMessage          = ""
         }
 
-        # Check if Exchange Connection already exists
-        try {
-            $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
-            $connectedToExchange = $true
-        }
-        catch {
-            if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
-                $connectedToExchange = $false
-            }
-        }
-            
-        # Connect to Exchange
-        try {
-            if ($connectedToExchange -eq $false) {
-                Hid-Write-Status -Event Information -Message "Connecting to Exchange Online.."
+        if ($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") {
+            # $httpErrorObj.ErrorMessage = $ErrorObject.ErrorDetails.Message # Does not show the correct error message for the Raet IAM API calls
+            $httpErrorObj.ErrorMessage = $ErrorObject.Exception.Message
 
-                # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-                $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
-                $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
-                $exchangeSessionParams = @{
-                    Credential       = $credential
-                    CommandName      = $commands
-                    ShowBanner       = $false
-                    ShowProgress     = $false
-                    TrackPerformance = $false
-                    ErrorAction      = 'Stop'
-                }
-                $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
-
-                Hid-Write-Status -Event Success -Message "Successfully connected to Exchange Online"
-            }
-            else {
-                Hid-Write-Status -Event Information -Message "Already connected to Exchange Online"
-            }
         }
-        catch {
-            if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
-                $errorMessage = "$($_.Exception.InnerExceptions)"
-            }
-            else {
-                $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
-            }
-            Hid-Write-Status -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
-            Hid-Write-Summary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
+        elseif ($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException") {
+            $httpErrorObj.ErrorMessage = [System.IO.StreamReader]::new($ErrorObject.Exception.Response.GetResponseStream()).ReadToEnd()
         }
 
-        # Add Send As Permissions
-        $parameters = @{
-            Identity        = $groupName
-            Member          = $groupMember
-            BypassSecurityGroupManagerCheck    = $true
-        }
-        $removePermission = Remove-DistributionGroupMember @parameters -Confirm:$false -ErrorAction Stop
+        Write-Output $httpErrorObj
     }
-    catch {
-        if($_ -like "*isn't a member of the group*"){
-            Hid-Write-Status -Event Warning -Message "The recipient $($parameters.Member) is not a member of the group $($parameters.Identity)"
-        }elseif($_ -like "*object '*' couldn't be found*"){
-            Hid-Write-Status -Event Warning -Message "Group $($parameters.Identity) couldn't be found. Possibly no longer exists. Skipping action"
-        }elseif($_ -like "*Couldn't find object ""*""*"){
-            Hid-Write-Status -Event Warning -Message "User $($parameters.Member) couldn't be found. Possibly no longer exists. Skipping action"
-        }else{
-            $PSCmdlet.ThrowTerminatingError($_)
+}
+
+function Get-ErrorMessage {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory,
+            ValueFromPipeline
+        )]
+        [object]$ErrorObject
+    )
+    process {
+        $errorMessage = [PSCustomObject]@{
+            VerboseErrorMessage = $null
+            AuditErrorMessage   = $null
         }
-    }
-    finally {
-        Hid-Write-Status -Event Information -Message "Disconnecting from Exchange Online"
-        Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
-        Hid-Write-Status -Event Success -Message "Successfully disconnected from Exchange Online"
+
+        if ( $($ErrorObject.Exception.GetType().FullName -eq "Microsoft.PowerShell.Commands.HttpResponseException") -or $($ErrorObject.Exception.GetType().FullName -eq "System.Net.WebException")) {
+            $httpErrorObject = Resolve-HTTPError -Error $ErrorObject
+
+            $errorMessage.VerboseErrorMessage = $httpErrorObject.ErrorMessage
+
+            $errorMessage.AuditErrorMessage = $httpErrorObject.ErrorMessage
+        }
+
+        # If error message empty, fall back on $ex.Exception.Message
+        if ([String]::IsNullOrEmpty($errorMessage.VerboseErrorMessage)) {
+            $errorMessage.VerboseErrorMessage = $ErrorObject.Exception.Message
+        }
+        if ([String]::IsNullOrEmpty($errorMessage.AuditErrorMessage)) {
+            $errorMessage.AuditErrorMessage = $ErrorObject.Exception.Message
+        }
+
+        Write-Output $errorMessage
     }
 }
 #endregion functions
+
+# Import module
 try {
-    Hid-Write-Status -Event Information -Message "Removing user [$groupmember] from group [$groupName]"
-    $null = Remove-GroupMember -GroupName $groupName -GroupMember $GroupMember
-    Hid-Write-Status -Event Success -Message "Succesfully removed user [$groupmember] from group [$groupName]"
-    Hid-Write-Summary -Event Success -Message "Succesfully removed user [$groupmember] from group [$groupName]"
+    $moduleName = "ExchangeOnlineManagement"
+    $importModule = Import-Module -Name $moduleName -ErrorAction Stop
 }
 catch {
-    Hid-Write-Status -Message  "Could not remove user [$groupmember] from group [$groupName]. Error: $($_.Exception.Message)" -Event Error
-    Hid-Write-Summary -Message "Could not remove user [$groupmember] from group [$groupName]" -Event Failed
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error importing module [$moduleName]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Connect to Exchange
+try {
+    # Create access token
+    Write-Verbose "Creating Access Token"
+
+    $baseUri = "https://login.microsoftonline.com/"
+    $authUri = $baseUri + "$EntraTenantID/oauth2/token"
+  
+    $body = @{
+        grant_type    = "client_credentials"
+        client_id     = "$EntraAppID"
+        client_secret = "$EntraAppSecret"
+        resource      = "https://outlook.office365.com"
+    }
+  
+    $Response = Invoke-RestMethod -Method POST -Uri $authUri -Body $body -ContentType "application/x-www-form-urlencoded" -UseBasicParsing:$true
+    $accessToken = $Response.access_token
+
+    # Connect to Exchange Online in an unattended scripting scenario using an access token.
+    Write-Verbose "Connecting to Exchange Online"
+
+    $exchangeSessionParams = @{
+        Organization     = $EntraOrganization
+        AppID            = $EntraAppID
+        AccessToken      = $accessToken
+        CommandName      = $commands
+        ShowBanner       = $false
+        ShowProgress     = $false
+        TrackPerformance = $false
+        ErrorAction      = "Stop"
+    }
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+  
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($errorMessage.VerboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Query Exchange user (to use object in further actions)
+try {
+    # More information about the cmdlet and the supported parameters: https://learn.microsoft.com/en-us/powershell/module/exchange/get-user?view=exchange-ps
+    $queryExchangeUserSplatParams = @{
+        Identity    = "$User"
+        ErrorAction = "Stop" # Makes sure the action enters the catch when an error occurs
+    }
+
+    Write-Verbose "Querying Exchange user [$($queryExchangeUserSplatParams.Identity)]"
+
+    $exchangeUser = Get-User @queryExchangeUserSplatParams
+  
+    # Check result count, and throw error when no results are found.
+    if (($exchangeUser | Measure-Object).Count -eq 0) {
+        throw "Exchange user [$($queryExchangeUserSplatParams.Filter)] not found that"
+    }
+
+    Write-Information "Successfully queried Exchange user [$($queryExchangeUserSplatParams.Identity)]. DisplayName: [$($exchangeUser.DisplayName)], Guid: [$($exchangeUser.guid)], Identity: [$($exchangeUser.Identity)]"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Exchange user [$($queryExchangeUserSplatParams.Identity)]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Query Distribution group (to use object in further actions)
+try {
+    # More information about the cmdlet and the supported parameters: https://learn.microsoft.com/en-us/powershell/module/exchange/get-group?view=exchange-ps
+    $queryexchangeDistributionGroupSplatParams = @{
+        Identity    = "$DistributionGroup"
+        ErrorAction = "Stop" # Makes sure the action enters the catch when an error occurs
+    }
+
+    Write-Verbose "Querying Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]"
+
+    $exchangeDistributionGroup = Get-DistributionGroup @queryexchangeDistributionGroupSplatParams
+  
+    # Check result count, and throw error when no results are found.
+    if (($exchangeDistributionGroup | Measure-Object).Count -eq 0) {
+        throw "Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)] not found"
+    }
+
+    Write-Information "Successfully queried Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]. DisplayName: [$($exchangeDistributionGroup.DisplayName)], Guid: [$($exchangeDistributionGroup.guid)], Identity: [$($exchangeDistributionGroup.Identity)]"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Distribution group [$($queryexchangeDistributionGroupSplatParams.Identity)]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Remove Permissions for Exchange user to Distribution group
+try {
+    # Microsoft docs: https://learn.microsoft.com/en-us/powershell/module/exchange/remove-distributiongroupmember?view=exchange-ps
+    $removePermissionSplatParams = @{
+        Identity                        = $exchangeDistributionGroup
+        Member                          = $exchangeUser
+        BypassSecurityGroupManagerCheck = $true
+        Confirm                         = $false
+        Verbose                         = $false
+        ErrorAction                     = "Stop"
+    }
+
+    Write-Verbose "Revoking permission for user [$($removePermissionSplatParams.Member)] to distribution group [$($removePermissionSplatParams.Identity)]"
+
+    $removePermission = Remove-DistributionGroupMember @removePermissionSplatParams
+
+    Write-Information "Successfully revoked permission for user [$($removePermissionSplatParams.Member.DisplayName)] to distribution group [$($removePermissionSplatParams.Identity.DisplayName)]"
+
+    $Log = @{
+        Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+        System            = "ExchangeOnline" # optional (free format text) 
+        Message           = "Successfully revoked permission for user [$($removePermissionSplatParams.Member.DisplayName)] to distribution group [$($removePermissionSplatParams.Identity.DisplayName)]" # required (free format text) 
+        IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+        TargetDisplayName = $removePermissionSplatParams.Member.DisplayName # optional (free format text)
+        TargetIdentifier  = $removePermissionSplatParams.Member.Identity # optional (free format text)
+    }
+    #send result back  
+    Write-Information -Tags "Audit" -MessageData $log
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    if ($errorMessage.AuditErrorMessage -like "*Microsoft.Exchange.Management.Tasks.MemberNotFoundException*") {
+        Write-Information "User [$($removePermissionSplatParams.Member.DisplayName)] is already removed from distribution group [$($removePermissionSplatParams.Identity.DisplayName)]"
+
+        $Log = @{
+            Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+            System            = "ExchangeOnline" # optional (free format text) 
+            Message           = "User [$($removePermissionSplatParams.Member.DisplayName)] is already removed from distribution group [$($removePermissionSplatParams.Identity.DisplayName)]" # required (free format text) 
+            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = $removePermissionSplatParams.Member.DisplayName # optional (free format text)
+            TargetIdentifier  = $removePermissionSplatParams.Member.Identity # optional (free format text)
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
+    } 
+    elseif ($errorMessage.AuditErrorMessage -like "*Microsoft.Exchange.Configuration.Tasks.ManagementObjectNotFoundException*") {
+        Write-Information "Distribution group [$($removePermissionSplatParams.Identity.DisplayName)] no longer exists. Skipped action"
+
+        $Log = @{
+            Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+            System            = "ExchangeOnline" # optional (free format text) 
+            Message           = "Distribution group [$($removePermissionSplatParams.Identity.DisplayName)] no longer exists. Skipped action" # required (free format text) 
+            IsError           = $false # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = $removePermissionSplatParams.Member.DisplayName # optional (free format text)
+            TargetIdentifier  = $removePermissionSplatParams.Member.Identity # optional (free format text)
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
+    } 
+    else {
+        Write-Verbose "Error at Line '$($ex.InvocationInfo.ScriptLineNumber)': $($ex.InvocationInfo.Line). Error: $($errorMessage.VerboseErrorMessage)"
+        
+        $Log = @{
+            Action            = "RevokeMembership" # optional. ENUM (undefined = default) 
+            System            = "ExchangeOnline" # optional (free format text) 
+            Message           = "Error revoking permission for user [$($removePermissionSplatParams.Member.DisplayName)] to distribution group [$($removePermissionSplatParams.Identity.DisplayName)]. Error Message: $($errorMessage.AuditErrorMessage)" # required (free format text) 
+            IsError           = $true # optional. Elastic reporting purposes only. (default = $false. $true = Executed action returned an error) 
+            TargetDisplayName = $removePermissionSplatParams.Member.DisplayName # optional (free format text)
+            TargetIdentifier  = $removePermissionSplatParams.Member.Identity # optional (free format text)
+        }
+        #send result back  
+        Write-Information -Tags "Audit" -MessageData $log
+
+        throw "Error revoking permission for user [$($removePermissionSplatParams.Member.DisplayName)] to distribution group [$($removePermissionSplatParams.Identity.DisplayName)]. Error Message: $($errorMessage.AuditErrorMessage)"
+    }
 }
 '@
-$RemoveGroupMembershipAction = @{
-    name                = 'Remove-GroupMembership'
-    automationContainer = 2
-    objectGUID          = $null
-    metaData            = '{"executeOnState":11}'
-    useTemplate         = $false
-    powerShellScript    = $RemoveGroupMembership
-    variables           = @(
-        @{
-            "name"           = "GroupName"
-            "value"          = "{{product.name}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "GroupMember"
-            "value"          = "{{requester.username}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        }
-    )
-}
-#endregion SendAsRights
-
-#region Emails
-$ApproveEmailContent = '
-Dear Servicedesk,
-The product {{product.name}} has sucesfully been granted to {{requester.fullName}}.
-Kind regards,
-HelloID
-'
-$ApproveEmailAction = @{
-    executeOnState = 3
-    variables      = @(
-        @{
-            "name"           = "to"
-            "value"          = "$defaultToAddress"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "from"
-            "value"          = "$defaultFromAddress"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "subject"
-            "value"          = "HelloID - Successfully granted product {{product.name}} to {{requester.fullName}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "content"
-            "value"          = $ApproveEmailContent
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "isHtmlContent"
-            "value"          = $true
-            "typeConstraint" = "boolean"
-            "secure"         = $false
-        }
-    )
-}
-
-$ReturnEmailContent = '
-Dear Servicedesk,
-
-The product {{product.name}} has sucesfully been revoked for {{requester.fullName}}.
-
-Kind regards,
-HelloID
-'
-$ReturnEmailAction = @{
-    executeOnState = 11
-    variables      = @(
-        @{
-            "name"           = "to"
-            "value"          = "$defaultToAddress"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "from"
-            "value"          = "$defaultFromAddress"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "subject"
-            "value"          = "HelloID - Successfully revoked product {{product.name}} for {{requester.fullName}}"
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "content"
-            "value"          = $ReturnEmailContent
-            "typeConstraint" = "string"
-            "secure"         = $false
-        },
-        @{
-            "name"           = "isHtmlContent"
-            "value"          = $true
-            "typeConstraint" = "boolean"
-            "secure"         = $false
-        }
-    )
-}
-#endregion Emails
-
+#endregion Remove Permission script
 #endregion HelloId_Actions_Variables
 
 #region script
+Hid-Write-Status -Event Information -Message "Starting synchronization of Exchange Online Distribution Groups to HelloID Self service Products"
+Hid-Write-Status -Event Information -Message "------[Exchange Online]-----------"
+
+# Import module
 try {
-    # Import module
     $moduleName = "ExchangeOnlineManagement"
-    $commands = @(
-        "Get-User",
-        "Get-Group",
-        "Get-DistributionGroup",
-        "Add-DistributionGroupMember",
-        "Remove-DistributionGroupMember",
-        "Get-EXOMailbox",
-        "Add-MailboxPermission",
-        "Add-RecipientPermission",
-        "Set-Mailbox",
-        "Remove-MailboxPermission",
-        "Remove-RecipientPermission"
-    )
- 
-    # If module is imported say that and do nothing
-    if (Get-Module | Where-Object { $_.Name -eq $ModuleName }) {
-        Write-HidStatus -Event Information -Message "Module $ModuleName is already imported."
-    }
-    else {
-        # If module is not imported, but available on disk then import
-        if (Get-Module -ListAvailable | Where-Object { $_.Name -eq $ModuleName }) {
-            $module = Import-Module $ModuleName -Cmdlet $commands
-            Write-HidStatus -Event Information -Message "Imported module $ModuleName"
-        }
-        else {
-            # If the module is not imported, not available and not in the online gallery then abort
-            Write-HidStatus -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-            Write-HidSummary -Event Failed -Message "Module $ModuleName not imported, not available. Please install the module using: Install-Module -Name $ModuleName -Force"
-        }
-    }
- 
-    # Check if Exchange Connection already exists
-    try {
-        $checkCmd = Get-User -ResultSize 1 -ErrorAction Stop | Out-Null
-        $connectedToExchange = $true
-    }
-    catch {
-        if ($_.Exception.Message -like "The term 'Get-User' is not recognized as the name of a cmdlet, function, script file, or operable program.*") {
-            $connectedToExchange = $false
-        }
-    }
-             
-    # Connect to Exchange
-    try {
-        if ($connectedToExchange -eq $false) {
-            Write-HidStatus -Event Information -Message "Connecting to Exchange Online.."
- 
-            # Connect to Exchange Online in an unattended scripting scenario using user credentials (MFA not supported).
-            $securePassword = ConvertTo-SecureString $ExchangeOnlineAdminPassword -AsPlainText -Force
-            $credential = [System.Management.Automation.PSCredential]::new($ExchangeOnlineAdminUsername, $securePassword)
-            $exchangeSessionParams = @{
-                Credential       = $credential
-                CommandName      = $commands
-                ShowBanner       = $false
-                ShowProgress     = $false
-                TrackPerformance = $false
-                ErrorAction      = 'Stop'
-            }
-            $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
- 
-            Write-HidStatus -Event Success -Message "Successfully connected to Exchange Online"
-        }
-        else {
-            Write-HidStatus -Event Information -Message "Already connected to Exchange Online"
-        }
-    }
-    catch {
-        if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
-            $errorMessage = "$($_.Exception.InnerExceptions)"
-        }
-        else {
-            $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
-        }
-        Write-HidStatus -Event Error -Message "Could not connect to Exchange Online, error: $errorMessage"
-        Write-HidSummary -Event Failed -Message "Failed to connect to Exchange Online, error: $_"
-    }
+    $importModule = Import-Module -Name $moduleName -ErrorAction Stop
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
 
-    try {
-        # Only get Exchange Groups (Mail-enabled Security Group of Distribution Group)
-        # Do not get all groups using "Get-Group", since we cannot manage Microsoft 365 or Security Groups (they have to be managed from Azure AD) 
-        # Filter Cloud-Only groups (IsDirSynced -eq 'False')
-        Write-HidStatus -Event Information -Message "Querying Exchange Distribution Groups"
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
 
-        $parameters = @{
-            Filter     = "IsDirSynced -eq 'False'"
-            ResultSize = "Unlimited"
-        }
-        # Enhance Filter when provided
-        if ($null -ne $Filter) {
-            $parameters.Filter += " -and ($Filter)"
-        }
-        $exchangeGroups = Get-DistributionGroup @parameters -ErrorAction Stop
+    throw "Error importing module [$moduleName]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
 
-        $TargetGroups = $exchangeGroups
-        # $TargetGroups = $null              #easy way to remove all products
+# Connect to Exchange
+try {
+    # Create access token
+    Write-Verbose "Creating Access Token"
 
-        Write-HidStatus -Event Success -Message "Succesfully queried Exchange Distribution Groups. Result count: $($exchangeGroups.id.Count)"
-
-        if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
-            Write-HidStatus -Event Information -Message "Querying Exchange Users"
-
-            $parameters = @{
-                ResultSize = "Unlimited"
-            }
-            $exchangeUsers = Get-User @parameters -ErrorAction Stop
-            $exchangeUsersGrouped = $exchangeUsers | Group-Object -Property 'identity' -AsHashTable -AsString
+    $baseUri = "https://login.microsoftonline.com/"
+    $authUri = $baseUri + "$EntraTenantID/oauth2/token"
     
-            Write-HidStatus -Event Success -Message "Succesfully queried Exchange Users. Result count: $($exchangeUsers.id.Count)"
-
-            # Query all groups, since owners can also be (in theory) other type of groups
-            Write-HidStatus -Event Information -Message "Querying Exchange groups"
-
-            $parameters = @{
-                ResultSize = "Unlimited"
-            }
-            $exchangeGroups = Get-Group @parameters -ErrorAction Stop
-            $exchangeGroupsGrouped = $exchangeGroups | Group-Object -Property 'identity' -AsHashTable -AsString
-    
-            Write-HidStatus -Event Success -Message "Succesfully queried Exchange groups. Result count: $($exchangeGroups.id.Count)"
-
-        }
+    $body = @{
+        grant_type    = "client_credentials"
+        client_id     = "$EntraAppID"
+        client_secret = "$EntraAppSecret"
+        resource      = "https://outlook.office365.com"
     }
-    catch {
-        if (-Not [string]::IsNullOrEmpty($_.Exception.InnerExceptions)) {
-            $errorMessage = "$($_.Exception.InnerExceptions)"
+    
+    $Response = Invoke-RestMethod -Method POST -Uri $authUri -Body $body -ContentType "application/x-www-form-urlencoded" -UseBasicParsing:$true
+    $accessToken = $Response.access_token
+
+    # Connect to Exchange Online in an unattended scripting scenario using an access token.
+    Write-Verbose "Connecting to Exchange Online"
+
+    $exchangeSessionParams = @{
+        Organization     = $EntraOrganization
+        AppID            = $EntraAppID
+        AccessToken      = $accessToken
+        CommandName      = $commands
+        ShowBanner       = $false
+        ShowProgress     = $false
+        TrackPerformance = $false
+        ErrorAction      = "Stop"
+    }
+    $exchangeSession = Connect-ExchangeOnline @exchangeSessionParams
+    
+    Write-Information "Successfully connected to Exchange Online"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($errorMessage.VerboseErrorMessage)"
+    throw "Error connecting to Exchange Online. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+# Get Exchange Online Distribution Groups
+try {  
+    $exchangeQuerySplatParams = @{
+        Filter               = $exchangeGroupsFilter
+        ResultSize           = "Unlimited"
+        Verbose              = $false
+        ErrorAction          = "Stop"
+    }
+
+    Hid-Write-Status -Event Information -Message "Querying Exchange Online Distribution Groups that match filter [$($exchangeQuerySplatParams.Filter)]"
+    $groups = Get-DistributionGroup @exchangeQuerySplatParams
+
+    $groupsInScope = [System.Collections.Generic.List[Object]]::New()
+    foreach ($group in $groups) {
+        [void]$groupsInScope.Add($group)
+    }
+
+    if (($groupsInScope | Measure-Object).Count -eq 0) {
+        throw "No Distribution Groups have been found"
+    }
+
+    Hid-Write-Status -Event Success -Message "Successfully queried Exchange Online Distribution Groups. Result count: $(($groupsInScope | Measure-Object).Count)"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Exchange Online Distribution Groups that match filter [$($exchangeQuerySplatParams.Filter)]. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+Hid-Write-Status -Event Information -Message "------[HelloID]------"
+try {
+
+    $splatParams = @{
+        Method = "GET"
+        Uri    = "agentpools"
+    }
+    $helloIDAgentPools = Invoke-HIDRestMethod @splatParams
+
+    # Filter for default agent pool
+    $helloIDAgentPoolsInScope = $null
+    $helloIDAgentPoolsInScope = $helloIDAgentPools | Where-Object { $_.options -eq "1" }
+    Hid-Write-Status -Event Success -Message "Successfully queried agent pools from HelloID (after filtering for default agent pool). Result count: $(($helloIDAgentPoolsInScope | Measure-Object).Count)"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying agent pools from from HelloID. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+try {
+    $splatParams = @{
+        Method = "GET"
+        Uri    = "selfservice/categories"
+    }
+    $helloIDSelfserviceCategories = Invoke-HIDRestMethod @splatParams
+
+    # Filter for specified category
+    $helloIDSelfserviceCategoriesInScope = $null
+    $helloIDSelfserviceCategoriesInScope = $helloIDSelfserviceCategories | Where-Object { $_.name -eq "$productCategory" }
+
+    if (($helloIDSelfserviceCategoriesInScope | Measure-Object).Count -eq 0) {
+        throw "No HelloID Self service Categories have been found with the name [$productCategory]"
+    }
+
+    Hid-Write-Status -Event Success -Message "Successfully queried Self service product categories from HelloID (after filtering for specified category). Result count: $(($helloIDSelfserviceCategoriesInScope | Measure-Object).Count)"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Self service product categories from HelloID. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+try {
+    $splatParams = @{
+        Method   = "GET"
+        Uri      = "products"
+        PageSize = 1000
+    }
+    $helloIDSelfServiceProducts = Invoke-HIDRestMethod @splatParams
+
+    # Filter for products with specified Sku Prefix
+    if (-not[String]::IsNullOrEmpty($ProductSkuPrefix)) {
+        $helloIDSelfServiceProductsInScope = $null
+        $helloIDSelfServiceProductsInScope = $helloIDSelfServiceProducts | Where-Object { $_.code -like "$ProductSkuPrefix*" }
+    }
+    else {
+        $helloIDSelfServiceProductsInScope = $null
+        $helloIDSelfServiceProductsInScope = $helloIDSelfServiceProducts
+    }
+
+    $helloIDSelfServiceProductsInScopeGrouped = $helloIDSelfServiceProductsInScope | Group-Object -Property "code" -AsHashTable -AsString
+    Hid-Write-Status -Event Success -Message "Successfully queried Self service products from HelloID (after filtering for products with specified SKU prefix). Result count: $(($helloIDSelfServiceProductsInScope | Measure-Object).Count)"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Self service products from HelloID. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+try {
+    $splatParams = @{
+        Method   = "GET"
+        Uri      = "groups"
+        PageSize = 1000
+    }
+    $helloIDGroups = Invoke-HIDRestMethod @splatParams
+
+    $helloIDGroupsInScope = $null
+    $helloIDGroupsInScope = $helloIDGroups 
+
+    $helloIDGroupsInScope | Add-Member -MemberType NoteProperty -Name SourceAndName -Value $null
+    $helloIDGroupsInScope | ForEach-Object {
+        if ([string]::IsNullOrEmpty($_.source)) {
+            $_.source = "Local"
+        }
+        $_.SourceAndName = "$($_.source)/$($_.name)"
+    }
+    $helloIDGroupsInScopeGroupedBySourceAndName = $helloIDGroupsInScope | Group-Object -Property "SourceAndName" -AsHashTable -AsString
+    Hid-Write-Status -Event Success -Message "Successfully queried Groups from HelloID. Result count: $(($helloIDGroupsInScope | Measure-Object).Count)"
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error querying Groups from HelloID. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+Hid-Write-Status -Event Information -Message "------[Calculations of combined data]------"
+# Calculate new and obsolete products
+try {
+    # Define product objects
+    $productObjects = [System.Collections.ArrayList]@()
+    foreach ($groupInScope in $groupsInScope) {
+        # Define ManagedBy Group
+        if ( $calculateProductResourceOwnerPrefixSuffix -eq $true ) {
+            # Calculate resource owner group by specfied prefix or suffix
+            if (-not[string]::IsNullOrEmpty($($calculatedResourceOwnerGroupPrefix)) -or -not[string]::IsNullOrEmpty($($calculatedResourceOwnerGroupSuffix))) {
+                $resourceOwnerGroupName = "$($calculatedResourceOwnerGroupSource)/" + "$($calculatedResourceOwnerGroupPrefix)" + "$($groupInScope.DisplayName)" + "$($calculatedResourceOwnerGroupSuffix)"
+            }
+            elseif ([string]::IsNullOrEmpty($($calculatedResourceOwnerGroupPrefix)) -and [string]::IsNullOrEmpty($($calculatedResourceOwnerGroupSuffix))) {
+                $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($productResourseOwner) ) { "Local/$($groupInScope.DisplayName) Resource Owners" } else { $productResourseOwner }
+                if ($verboseLogging -eq $true) {
+                    Hid-Write-Status -Event Warning "No Resource Owner Group Prefix of Suffix specified. Using default resource owner group [$($resourceOwnerGroupName)]"
+                }
+            }
         }
         else {
-            $errorMessage = "$($_.Exception.Message) $($_.ScriptStackTrace)"
-        }
-        Write-HidStatus -Event Error -Message "Could not query Exchange Distribution Groups, error: $errorMessage"
-        Write-HidSummary -Event Failed -Message "Failed to query Exchange Distribution Groups, error: $_"
-    }
-    finally {
-        Write-HidStatus -Event Information -Message "Disconnecting from Exchange Online"
-        Disconnect-ExchangeOnline -Confirm:$false -Verbose:$false -ErrorAction Stop
-        Write-HidStatus -Event Success -Message "Successfully disconnected from Exchange Online"
-    }
-
-    Write-HidStatus -Message 'Starting synchronization of TargetSystem groups to HelloID products' -Event Information
-    Write-HidStatus -Message "------[$TargetSystemName]-----------" -Event Information
-    if ($TargetGroups.count -gt 0) {
-        if ($null -eq $TargetGroups.$uniqueProperty) {
-            throw "The specified unique property [$uniqueProperty] for the target system does exist as property in the groups"
-        }
-    }
-
-    if ($TargetGroups.Count -eq 0) {
-        Write-HidStatus -Message 'No Target Groups have been found' -Event Information
-    }
-    else {
-        Write-HidStatus -Message "[$($TargetGroups.Count)] Target group(s)" -Event Information
-    }
-
-    $targetGroupsList = [System.Collections.Generic.List[Object]]::New()
-    foreach ($group in $TargetGroups) {
-        $tempGroup = $group | Select-Object *
-        $tempGroup | Add-Member @{
-            CombinedUniqueId = $SKUPrefix + "$($group.$uniqueProperty)".Replace('-', '')
-        }
-        # Optional, override product name
-        $tempGroup.name = $tempGroup.DisplayName
-
-        $targetGroupsList.Add($tempGroup)
-    }
-    $TargetGroups = $targetGroupsList
-    $TargetGroupsGrouped = $TargetGroups | Group-Object -Property CombinedUniqueId -AsHashTable -AsString
-
-    Write-HidStatus -Message '------[HelloID]-----------------------' -Event Information
-    Write-HidStatus -Message 'Getting default agent pool' -Event Information
-    $defaultAgentPool = (Get-HIDDefaultAgentPool) | Where-Object { $_.options -eq '1' }
-
-    Write-HidStatus -Message "Gathering the self service product category '$ProductCategory'" -Event Information
-    $selfServiceCategory = (Get-HIDSelfServiceCategory) | Where-Object { $_.name -eq "$ProductCategory" }
-
-    if ($selfServiceCategory.isEnabled -eq $false) {
-        Write-HidStatus -Message "Found a disabled ProductCategory '$ProductCategory', will enable the current category" -Event Information
-        $selfServiceCategory = New-HIDSelfServiceCategory -Name "$ProductCategory" -IsEnabled $true -SelfServiceCategoryGUID  $selfServiceCategory.selfServiceCategoryGUID
-    }
-    elseif ($null -eq $selfServiceCategory) {
-        Write-HidStatus -Message "No ProductCategory Found will Create a new category '$ProductCategory'" -Event Information
-        $selfServiceCategory = New-HIDSelfServiceCategory -Name "$ProductCategory" -IsEnabled $true
-    }
-
-    Write-HidStatus -Message 'Gathering Self service products from HelloID' -Event Information
-    $selfServiceProduct = Get-HIDSelfServiceProduct
-    $selfServiceProductGrouped = $selfServiceProduct | Group-Object -Property 'code' -AsHashTable -AsString
-
-    Write-HidStatus -Message 'Gathering Self service product actions from HelloID' -Event Information
-    $selfServiceProductAction = Get-HIDSelfServiceProductAction
-    $selfServiceProductActionGrouped = $selfServiceProductAction | Group-Object -Property 'objectGuid' -AsHashTable -AsString
-
-    if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
-        Write-HidStatus -Message 'Gathering users from HelloID' -Event Information
-        $selfServiceUsers = Get-HIDUsers
-        $selfServiceUsersGrouped = $selfServiceUsers | Group-Object -Property 'username' -AsHashTable -AsString
-
-        Write-HidStatus -Message 'Gathering groups from HelloID' -Event Information
-        $selfServiceGroups = Get-HIDGroups
-        $selfServiceGroupsGrouped = $selfServiceGroups | Group-Object -Property 'name' -AsHashTable -AsString
-    }
-
-    Write-HidStatus -Message '------[Summary]-----------------------' -Event Information
-    Write-HidStatus -Message "Total HelloID Self Service Product(s) found [$($selfServiceProduct.Count)]" -Event Information
-
-    # Making sure we only manage the products of Target System
-    $currentProducts = $selfServiceProduct | Where-Object { $_.code.ToLower().startswith("$($SKUPrefix.tolower())") }
-
-    Write-HidStatus -Message "HelloID Self Service Product(s) of Target System [$TargetSystemName] found [$($currentProducts.Count)]" -Event Information
-
-    # Null Check Reference before compare
-    $currentProductsChecked = if ($null -ne $currentProducts.code) { $currentProducts.code.tolower() } else { $null }
-    $targetGroupsChecked = if ($null -ne $TargetGroups.CombinedUniqueId) { $TargetGroups.CombinedUniqueId.ToLower() } else { $null }
-
-    $productToCreateInHelloID , $productToRemoveFromHelloID, $productExistsInHelloID = Compare-Join -ReferenceObject $targetGroupsChecked -DifferenceObject $currentProductsChecked
-    Write-HidStatus "[$($productToCreateInHelloID.count)] Products will be Created " -Event Information
-    Write-HidStatus "[$($productExistsInHelloID.count)] Products already exist in HelloId" -Event Information
-    if ($removeProduct) {
-        Write-HidStatus "[$($productToRemoveFromHelloID.count)] Products will be Removed " -Event Information
-    }
-    else {
-        Write-HidStatus 'Verify if there are products found which are already disabled.' -Event Information
-        $productToRemoveFromHelloID = [array]($currentProducts | Where-Object { ( $_.code.ToLower() -in $productToRemoveFromHelloID) -and $_.visibility -ne 'Disabled' }).code
-        Write-HidStatus "[$($productToRemoveFromHelloID.count)] Products will be disabled " -Event Information
-    }
-
-    Write-HidStatus -Message '------[Processing]------------------' -Event Information
-    foreach ($productToCreate in $productToCreateInHelloID) {
-        $product = $TargetGroupsGrouped[$productToCreate]
-        Write-HidStatus "Creating Product [$($product.name)]" -Event Information
-        $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($product.name) Resource Owners" } else { $SAProductResourceOwner }
-
-        $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName
-        if ($null -eq $resourceOwnerGroup ) {
-            Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName)]" -Event Information
-            $resourceOwnerGroup = New-HIDGroup -GroupName $resourceOwnerGroupName -isEnabled $true
+            $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($productResourseOwner) ) { "Local/$($groupInScope.DisplayName) Resource Owners" } else { $productResourseOwner }
         }
 
+        # Get HelloID Resource Owner Group and create if it doesn't exist
+        $helloIDResourceOwnerGroup = $null
+        if (-not[string]::IsNullOrEmpty($resourceOwnerGroupName)) {
+            $helloIDResourceOwnerGroup = $helloIDGroupsInScopeGroupedBySourceAndName["$($resourceOwnerGroupName)"]
+            if ($null -eq $helloIDResourceOwnerGroup) {
+                # Only create group if it's a Local group (otherwise sync should handle this)
+                if ($resourceOwnerGroupName -like "Local/*") {
+                    # Create HelloID Resource Owner Group
+                    try {                       
+                        $helloIDGroupBody = @{
+                            Name      = "$($resourceOwnerGroupName.split("/")[-1])"
+                            IsEnabled = $true
+                            Source    = "Local"
+                        }
+
+                        $splatParams = @{
+                            Method = "POST"
+                            Uri    = "groups"
+                            Body   = ($helloIDGroupBody | ConvertTo-Json -Depth 10)
+                        }
+
+                        if ($dryRun -eq $false) {
+                            $helloIDResourceOwnerGroup = Invoke-HIDRestMethod @splatParams
         
-        if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
-            if ($null -eq $product.managedBy) {
-                Write-HidStatus "No owners found of Exchange Distribution Group [$($product.name)]" -Event Information
-            }
-            else {
-                Write-HidStatus "Setting owners of Exchange Distribution Group [$($product.name)] as members of HelloID Resource Owner Group [$($resourceOwnerGroup.name)]" -Event Information
-
-                $distributionGroupOwners = $product.managedBy
-                foreach ($distributionGroupOwner in $distributionGroupOwners) {
-                    # Owners can be either groups or users or a combination of both, therefore, check both
-
-                    # Check for user
-                    $exchangeUser = $exchangeUsersGrouped[$distributionGroupOwner]
-                    if ($null -ne $exchangeUser) {
-                        $helloIDUser = $selfServiceUsersGrouped[$($exchangeUser.UserPrincipalName)]
-                        if ($null -ne $helloIDUser) {
-                            $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
-                        }
-                    }
-                    else {
-                        # Check for group
-                        $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
-                        if ($null -ne $exchangeGroup) {
-                            $helloIDGroup = $selfServiceGroupsGrouped[$($exchangeGroup.Name)]
-                            if ($null -ne $helloIDGroup) {
-                                $null = Add-HIDGroupMemberGroup -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDGroup.groupGUID
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        $productBody = @{
-            Name                       = "$($product.displayName)"
-            Description                = "$TargetSystemName - $($product.displayName)"
-            ManagedByGroupGUID         = $($resourceOwnerGroup.groupGuid)
-            Categories                 = @($selfServiceCategory.name)
-            ApprovalWorkflowName       = $SAProductWorkflow
-            AgentPoolGUID              = $defaultAgentPool.agentPoolGUID
-            Icon                       = $null
-            FaIcon                     = "fa-$FaIcon"
-            UseFaIcon                  = $true
-            IsAutoApprove              = $false
-            IsAutoDeny                 = $false
-            MultipleRequestOption      = 1
-            HasTimeLimit               = $false
-            LimitType                  = 'Fixed'
-            ManagerCanOverrideDuration = $true
-            ReminderTimeout            = 30
-            OwnershipMaxDuration       = 90
-            CreateDefaultEmailActions  = $true
-            Visibility                 = $productVisibility
-            RequestCommentOption       = $productRequestCommentOption
-            ReturnOnUserDisable        = $returnProductOnUserDisable
-            Code                       = $product.CombinedUniqueId
-        } | ConvertTo-Json
-        $selfServiceProduct = Set-HIDSelfServiceProduct -ProductJson $productBody
-
-        $sAAccessGroup = Get-HIDGroup -GroupName $ProductAccessGroup
-        if (-not $null -eq $sAAccessGroup) {
-            Write-HidStatus -Message  "Adding ProductAccessGroup [$ProductAccessGroup] to Product " -Event Information
-            $null = Add-HIDProductMember -selfServiceProductGUID $selfServiceProduct.selfServiceProductGUID -MemberGUID $sAAccessGroup.groupGuid
-        }
-        else {
-            Write-HidStatus -Message  "The Specified ProductAccessGroup [$ProductAccessGroup] does not exist. We will continue without adding the access Group" -Event Warning
-        }
-
-        $PowerShellActions = [System.Collections.Generic.list[object]]@(
-            $AddGroupMembershipAction
-            $RemoveGroupMembershipAction
-        )
-
-        foreach ($PowerShellAction in $PowerShellActions) {
-            Write-HidStatus -Message  "Adding PowerShell action [$($PowerShellAction.Name)] to Product" -Event Information
-            $PowerShellAction.objectGUID = $selfServiceProduct.selfServiceProductGUID
-            $null = Add-HIDPowerShellAction -Body ($PowerShellAction | ConvertTo-Json)
-        }
-
-        if ($true -eq $includeEmailAction) {
-            $EmailActions = [System.Collections.Generic.list[object]]@(
-                $ApproveEmailAction
-                $ReturnEmailAction
-            )
-
-            foreach ($EmailAction in $EmailActions) {
-                Write-HidStatus -Message  "Adding Email action to Product" -Event Information
-                $null = Add-HIDEmailAction -ProductGUID $selfServiceProduct.selfServiceProductGUID -Body ($EmailAction | ConvertTo-Json)
-            }
-        }
-    }
-
-    foreach ($productToRemove in $ProductToRemoveFromHelloID) {
-        $product = $selfServiceProductGrouped[$productToRemove] | Select-Object -First 1
-        if ($removeProduct) {
-            Write-HidStatus "Removing Product [$($product.name)]" -Event Information
-            $null = Remove-HIDSelfServiceProduct -ProductGUID  $product.selfServiceProductGUID
-        }
-        else {
-            Write-HidStatus "Disabling Product [$($product.name)]" -Event Information
-            $product.visibility = 'Disabled'
-            $disableProductBody = ConvertTo-Json ($product | Select-Object -Property * -ExcludeProperty Code)
-            $null = Set-HIDSelfServiceProduct -ProductJson $disableProductBody
-        }
-    }
-
-    foreach ($productToUpdate in $productExistsInHelloID) {
-        $product = $selfServiceProductGrouped[$productToUpdate] | Select-Object -First 1
-        if ($true -eq $overwriteExistingProduct) {
-            Write-HidStatus "Overwriting existing Product [$($product.name)]" -Event Information
-
-            # Copy existing product
-            $overwriteProductBody = [PSCustomObject]@{}
-            $product.psobject.properties | ForEach-Object {
-                $overwriteProductBody | Add-Member -MemberType $_.MemberType -Name $_.Name -Value $_.Value -Force
-            }
-
-            # Optional, set product properties to update (that are in response of get products: https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products)
-            $newProduct = $TargetGroupsGrouped[$productToUpdate]
-            $overwriteProductBody.name = "$($newProduct.displayName)"
-            $overwriteProductBody.Description = "$TargetSystemName - $($newProduct.displayName)"
-            $overwriteProductBody.requestCommentOption = $productRequestCommentOption
-            $overwriteProductBody.ReturnOnUserDisable = $returnProductOnUserDisable
-
-            # Check if resource owner group is specified and exists, if not create new group
-            $resourceOwnerGroupName = if ([string]::IsNullOrWhiteSpace($SAProductResourceOwner) ) { "$($overwriteProductBody.name) Resource Owners" } else { $SAProductResourceOwner }
-
-            $resourceOwnerGroup = Get-HIDGroup -GroupName $resourceOwnerGroupName
-            if ($null -eq $resourceOwnerGroup ) {
-                Write-HidStatus "Creating a new resource owner group for Product [$($resourceOwnerGroupName)]" -Event Information
-                $resourceOwnerGroup = New-HIDGroup -GroupName $resourceOwnerGroupName -isEnabled $true
-            }            
-            $overwriteProductBody.ManagedByGroupGUID = $($resourceOwnerGroup.groupGuid)
-
-            if ($true -eq $setDistributionGroupOwnerAsResourceOwner) {
-                if ($null -eq $newProduct.managedBy) {
-                    Write-HidStatus "No owners found of Exchange Distribution Group [$($newProduct.name)]" -Event Information
-                }
-                else {
-                    Write-HidStatus "Setting owners of Exchange Distribution Group [$($newProduct.name)] as members of HelloID Resource Owner Group [$($resourceOwnerGroup.name)]" -Event Information
-    
-                    $distributionGroupOwners = $newProduct.managedBy
-                    foreach ($distributionGroupOwner in $distributionGroupOwners) {
-                        # Owners can be either groups or users or a combination of both, therefore, check both
-    
-                        # Check for user
-                        $exchangeUser = $exchangeUsersGrouped[$distributionGroupOwner]
-                        if ($null -ne $exchangeUser) {
-                            $helloIDUser = $selfServiceUsersGrouped[$($exchangeUser.UserPrincipalName)]
-                            if ($null -ne $helloIDUser) {
-                                $null = Add-HIDGroupMemberUser -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDUser.userGUID
+                            if ($verboseLogging -eq $true) {
+                                Hid-Write-Status -Event Success "Successfully created new resource owner group [$($resourceOwnerGroupName)] for HelloID Self service Product [$($newProduct.Name)]"
                             }
                         }
                         else {
-                            # Check for group
-                            $exchangeGroup = $exchangeGroupsGrouped[$distributionGroupOwner]
-                            if ($null -ne $exchangeGroup) {
-                                $helloIDGroup = $selfServiceGroupsGrouped[$($exchangeGroup.Name)]
-                                if ($null -ne $helloIDGroup) {
-                                    $null = Add-HIDGroupMemberGroup -GroupGUID $resourceOwnerGroup.groupGuid -MemberGUID $helloIDGroup.groupGUID
-                                }
+                            if ($verboseLogging -eq $true) {
+                                Hid-Write-Status -Event Warning "DryRun: Would create new resource owner group [$($resourceOwnerGroupName)] for HelloID Self service Product [$($newProduct.Name)]"
                             }
                         }
                     }
+                    catch {
+                        $ex = $PSItem
+                        $errorMessage = Get-ErrorMessage -ErrorObject $ex
+                        
+                        Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+                        
+                        throw "Error creating new resource owner group [$($resourceOwnerGroupName)] for HelloID Self service Product [$($newProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+                    }
                 }
-            }
-
-            # Optional, add product properties to update (that aren't in response of get products: https://docs.helloid.com/hc/en-us/articles/115003027353-GET-Get-products)
-            $overwriteProductBody | Add-Member @{
-                ApprovalWorkflowName = $SAProductWorkflow
-            }
-
-            $overwriteProductBody = ConvertTo-Json -InputObject $overwriteProductBody -depth 10
-            $null = Set-HIDSelfServiceProduct -ProductJson $overwriteProductBody
-
-            if ($true -eq $overwriteExistingProductAction) {
-                $productActions = $selfServiceProductActionGrouped[$($product.selfServiceProductGUID)]
-                foreach ($productAction in $productActions) {
-                    $overwritePowerShellAction = $null
-                    switch ($productAction.name.tolower()) {
-                        'add-groupmembership' {
-                            Write-HidStatus "Overwriting existing Product PowerShell Action [$($productAction.name)]" -Event Information
-                            $tempAddGroupMembershipAction = $AddGroupMembershipAction.psobject.copy()
-                            $overwritePowerShellAction = $tempAddGroupMembershipAction
-
-                            $overwritePowerShellAction.objectGUID = $product.selfServiceProductGUID
-                            $overwritePowerShellAction.automationTaskGuid = $productAction.automationTaskGuid
-                            $null = Add-HIDPowerShellAction -Body ($overwritePowerShellAction | ConvertTo-Json)
-                            break
-                        }
-                        'remove-groupmembership' {
-                            Write-HidStatus "Overwriting existing Product PowerShell Action [$($productAction.name)]" -Event Information
-                            $tempRemoveGroupMembershipAction = $RemoveGroupMembershipAction.psobject.copy()
-                            $overwritePowerShellAction = $tempRemoveGroupMembershipAction
-
-                            $overwritePowerShellAction.objectGUID = $product.selfServiceProductGUID
-                            $overwritePowerShellAction.automationTaskGuid = $productAction.automationTaskGuid
-                            $null = Add-HIDPowerShellAction -Body ($overwritePowerShellAction | ConvertTo-Json)
-                            break
-                        }
+                else {
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Warning "No resource owner group [$($resourceOwnerGroupName)] found for HelloID Self service Product [$($newProduct.Name)]"
                     }
                 }
             }
+        }
 
+        # Define actions for product
+        #region Define On Request actions
+        $onRequestActions = [System.Collections.Generic.list[object]]@()
+        #endregion Define On Request actions
+
+        #region Define On Approve actions
+        $onApproveActions = [System.Collections.Generic.list[object]]@()
+
+        # Add action to Add permission for Exchange user to Distribution group
+        [void]$onApproveActions.Add([PSCustomObject]@{
+                id          = "" # supplying an id when creating a product action is not supported. You have to leave the 'id' property empty or leave the property out alltogether when creating a new product action
+                name        = "Grant-PermissionToDistributionGroup"
+                script      = $addPermissionScript
+                agentPoolId = "$($helloIDAgentPoolsInScope.agentPoolGUID)"
+                runInCloud  = $false
+            })
+        #endregion Define On Approve actions
+
+        #region Define On Deny actions
+        $onDenyActions = [System.Collections.Generic.list[object]]@()
+        #endregion Define On Deny actions
+
+        #region Define On Return actions
+        $onReturnActions = [System.Collections.Generic.list[object]]@()
+
+        # Add action to Remove Full Access permission for Exchange user to Distribution group
+        [void]$onReturnActions.Add([PSCustomObject]@{
+                id          = "" # supplying an id when creating a product action is not supported. You have to leave the 'id' property empty or leave the property out alltogether when creating a new product action
+                name        = "Revoke-PermissionFromDistributionGroup"
+                script      = $removePermissionScript
+                agentPoolId = "$($helloIDAgentPoolsInScope.agentPoolGUID)"
+                runInCloud  = $false
+            })
+        #endregion Define On Return actions
+
+        #region Define On Withdrawn actions
+        $onWithdrawnActions = [System.Collections.Generic.list[object]]@()
+        #endregion Define On Withdrawn actions
+
+        $productObject = [PSCustomObject]@{
+            # General
+            name                       = "$($groupInScope.DisplayName)"
+            description                = "Access to the distribution group $($groupInScope.DisplayName)"
+            code                       = ("$($ProductSKUPrefix)" + "$($groupInScope.$exchangeGroupUniqueProperty)").Replace("-", "")
+            resourceOwnerGroup         = [PSCustomObject]@{
+                id = $helloIDResourceOwnerGroup.groupGuid
+            }
+            approvalWorkflow           = [PSCustomObject]@{
+                id = $productApprovalWorkflowId
+            }
+            showPrice                  = $false
+            price                      = $null
+            visibility                 = $productVisibility
+            requestComment             = $productRequestCommentOption
+            maxCount                   = $null
+            hasRiskFactor              = $false
+            riskFactor                 = 1
+            allowMultipleRequests      = $productAllowMultipleRequests
+            icon                       = $null
+            useFaIcon                  = $true 
+            faIcon                     = "fa-$productFaIcon"
+            categories                 = @(
+                [PSCustomObject]@{
+                    id = "$($helloIDSelfserviceCategoriesInScope.selfServiceCategoryGUID)"
+                }
+            )
+            agentPool                  = [PSCustomObject]@{
+                id = "$($helloIDAgentPoolsInScope.agentPoolGUID)"
+            }
+            returnOnUserDisable        = $productReturnOnUserDisable
+            
+            # Form
+            dynamicForm                = $null
+
+            # Actions
+            onRequest                  = $onRequestActions
+            onApprove                  = $onApproveActions
+            onDeny                     = $onDenyActions
+            onReturn                   = $onReturnActions
+            onWithdrawn                = $onWithdrawnActions
+
+            # Groups - Are set with an additional API call
+            
+            # Time Limit
+            hasTimeLimit               = $false
+            managerCanOverrideDuration = $true
+            limitType                  = "Maximum"
+            ownershipMaxDuration       = 3650
+        }
+
+        [void]$productObjects.Add($productObject)
+    }
+
+    # Define product to create
+    $newProducts = [System.Collections.ArrayList]@()
+    $newProducts = $productObjects | Where-Object { $_.Code -notin $helloIDSelfServiceProductsInScope.code }
+
+    # Define products to revoke
+    $obsoleteProducts = [System.Collections.ArrayList]@()
+    $obsoleteProducts = $helloIDSelfServiceProductsInScope | Where-Object { $_.code -notin $productObjects.Code }
+
+    # Define products already existing
+    $existingProducts = [System.Collections.ArrayList]@()
+    $existingProducts = $productObjects | Where-Object { $_.code -in $helloIDSelfServiceProductsInScope.Code }
+
+    # Define total products (existing + new products)
+    $totalProducts = ($(($existingProducts | Measure-Object).Count) + $(($newProducts | Measure-Object).Count))
+}
+catch {
+    $ex = $PSItem
+    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+    throw "Error calculating new and obsolete products. Error Message: $($errorMessage.AuditErrorMessage)"
+}
+
+Hid-Write-Status -Event Information -Message "------[Summary]------"
+
+Hid-Write-Status -Event Information -Message "Total Exchange Online Distribution Groups in scope [$(($groupsInScope | Measure-Object).Count)]"
+
+if ($overwriteExistingProduct -eq $true -or $overwriteExistingProductAction -eq $true -or $addMissingProductAction -eq $true) {
+    Hid-Write-Status -Event Information "Total HelloID Self service Product(s) already exist (and will be updated) [$(($existingProducts | Measure-Object).Count)]. Overwrite Product: [$($overwriteExistingProduct)]"
+}
+else {
+    Hid-Write-Status -Event Information -Message "Total HelloID Self service Product(s) already exist (and won't be changed) [$(($existingProducts | Measure-Object).Count)]"
+}
+
+Hid-Write-Status -Event Information -Message "Total HelloID Self service Product(s) to create [$(($newProducts | Measure-Object).Count)]"
+
+if ($removeProduct) {
+    Hid-Write-Status -Event Information "Total HelloID Self service Product(s) to remove [$(($obsoleteProducts | Measure-Object).Count)]"
+}
+else {
+    Hid-Write-Status -Event Information "Total HelloID Self service Product(s) to disable [$(($obsoleteProducts | Measure-Object).Count)]"
+}
+
+Hid-Write-Status -Event Information -Message "------[Processing]------------------"
+try {
+    $productCreatesSuccess = 0
+    $productCreatesError = 0
+    foreach ($newProduct in $newProducts) {
+        try {
+            # Create HelloID Self service Product
+            try {
+                # Create custom productbody object
+                $createHelloIDSelfServiceProductBody = [PSCustomObject]@{}
+
+                # Copy product properties into productbody object
+                $newProduct.psobject.properties | ForEach-Object {
+                    $createHelloIDSelfServiceProductBody | Add-Member -MemberType NoteProperty -Name $_.Name -Value $_.Value
+                }
+                
+                $splatParams = @{
+                    Method      = "POST"
+                    Uri         = "products"
+                    Body        = ($createHelloIDSelfServiceProductBody | ConvertTo-Json -Depth 10)
+                    ErrorAction = "Stop"
+                }
+
+                if ($dryRun -eq $false) {
+                    $createdHelloIDSelfServiceProduct = Invoke-HIDRestMethod @splatParams
+
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Success "Successfully created HelloID Self service Product [$($createHelloIDSelfServiceProductBody.Name)]"
+                    }
+                }
+                else {
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Warning "DryRun: Would create HelloID Self service Product [$($createHelloIDSelfServiceProductBody.name)]"
+                    }
+                }
+            }
+            catch {
+                $ex = $PSItem
+                $errorMessage = Get-ErrorMessage -ErrorObject $ex
+            
+                Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+            
+                throw "Error creating HelloID Self service Product [$($createHelloIDSelfServiceProductBody.name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+            }
+
+            # Get HelloID Access Group
+            $helloIDAccessGroup = $null
+            $helloIDAccessGroup = $helloIDGroupsInScopeGroupedBySourceAndName["$($productAccessGroup)"]
+
+            # Add HelloID Access Group to HelloID Self service Product
+            if (-not $null -eq $helloIDAccessGroup) {
+                try {
+                    $addHelloIDAccessGroupToProductBody = @{
+                        GroupGuid = "$($helloIDAccessGroup.groupGuid)"
+                    }
+
+                    $splatParams = @{
+                        Method = "POST"
+                        Uri    = "selfserviceproducts/$($createdHelloIDSelfServiceProduct.productId)/groups"
+                        Body   = ($addHelloIDAccessGroupToProductBody | ConvertTo-Json -Depth 10)
+                    }
+
+                    if ($dryRun -eq $false) {
+                        $addHelloIDAccessGroupToProduct = Invoke-HIDRestMethod @splatParams
+
+                        if ($verboseLogging -eq $true) {
+                            Hid-Write-Status -Event Success "Successfully added HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($createdHelloIDSelfServiceProduct.Name)]"
+                        }
+                    }
+                    else {
+                        if ($verboseLogging -eq $true) {
+                            Hid-Write-Status -Event Warning "DryRun: Would add HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($createHelloIDSelfServiceProductBody.Name)]"
+                        }
+                    }
+                }
+                catch {
+                    $ex = $PSItem
+                    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+                
+                    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+                
+                    throw "Error adding HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($createdHelloIDSelfServiceProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+                }
+            }
+            else {
+                if ($verboseLogging -eq $true) {
+                    Hid-Write-Status  -Event Warning -Message "The Specified HelloID Access Group [$($productAccessGroup)] does not exist. We will continue without adding the access Group to HelloID Self service Product [$($createdHelloIDSelfServiceProduct.Name)]"
+                }
+            }
+            $productCreatesSuccess++            
+        }
+        catch {
+            $ex = $PSItem
+            $errorMessage = Get-ErrorMessage -ErrorObject $ex
+            
+            Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+            
+            $productCreatesError++
+            throw "Error creating HelloID Self service Product [$($newProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+        }
+    }
+    if ($dryRun -eq $false) {
+        if ($productCreatesSuccess -ge 1 -or $productCreatesError -ge 1) {
+            Hid-Write-Status -Event Information -Message "Created HelloID Self service Products. Success: $($productCreatesSuccess). Error: $($productCreatesError)"
+            Hid-Write-Summary -Event Information -Message "Created HelloID Self service Products. Success: $($productCreatesSuccess). Error: $($productCreatesError)"
+        }
+    }
+    else {
+        Hid-Write-Status -Event Warning -Message "DryRun: Would create [$(($newProducts | Measure-Object).Count)] HelloID Self service Products"
+        Hid-Write-Status -Event Warning -Message "DryRun: Would create [$(($newProducts | Measure-Object).Count)] HelloID Self service Products"
+    }
+
+    $productRemovesSuccess = 0
+    $productRemovesError = 0
+    $productDisablesSuccess = 0
+    $productDisablesError = 0
+    foreach ($obsoleteProduct in $obsoleteProducts) {
+        if ($removeProduct -eq $true) {
+            # Remove HelloID Self service Product
+            try {
+                $splatParams = @{
+                    Method = "DELETE"
+                    Uri    = "products/$($obsoleteProduct.productId)"
+                }
+    
+                if ($dryRun -eq $false) {
+                    $deletedHelloIDSelfServiceProduct = Invoke-HIDRestMethod @splatParams                
+    
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Success "Successfully removed HelloID Self service Product [$($obsoleteProduct.Name)]"
+                    }
+                    $productRemovesSuccess++
+                }
+                else {
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Warning "DryRun: Would remove HelloID Self service Product [$($obsoleteProduct.Name)]"
+                    }
+                }
+            }
+            catch {
+                $ex = $PSItem
+                $errorMessage = Get-ErrorMessage -ErrorObject $ex
+            
+                Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+            
+                $productRemovesError++
+                throw "Error removing HelloID Self service Product [$($obsoleteProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+            }
         }
         else {
-            # Make sure existing products are enabled
-            if ($product.visibility -eq 'Disabled') {
-                Write-HidStatus "Enabling existing Product [$($product.name)]" -Event Information
-                $product.visibility = $productVisibility
-                $product.isEnabled = $true
-                $enableProductBody = ConvertTo-Json ($product | Select-Object -Property *)
-                $null = Set-HIDSelfServiceProduct -ProductJson $enableProductBody
+            # Disable HelloID Self service Product
+            try {
+                # Create custom productbody object
+                $disableHelloIDSelfServiceProductBody = [PSCustomObject]@{}
+
+                # Copy product properties into productbody object (all but the properties that aren't supported when updating a HelloID Self service Product)
+                $obsoleteProduct.psobject.properties | ForEach-Object {
+                    $disableHelloIDSelfServiceProductBody | Add-Member -MemberType NoteProperty -Name $_.Name -Value $_.Value
+                }
+
+                # Set Visibility to Disabled in product productbody object
+                $disableHelloIDSelfServiceProductBody.Visibility = "Disabled"
+
+                $splatParams = @{
+                    Method = "POST"
+                    Uri    = "products"
+                    Body   = ($disableHelloIDSelfServiceProductBody | ConvertTo-Json -Depth 10)
+                }
+
+                if ($dryRun -eq $false) {
+                    $disableHelloIDSelfServiceProduct = Invoke-HIDRestMethod @splatParams
+
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Success "Successfully disabled HelloID Self service Product [$($obsoleteProduct.Name)]"
+                    }
+                    $productDisablesSuccess++
+                }
+                else {
+                    if ($verboseLogging -eq $true) {
+                        Hid-Write-Status -Event Warning "DryRun: Would disable HelloID Self service Product [$($obsoleteProduct.Name)]"
+                    }
+                }
             }
-            Write-HidStatus "No Changes Needed. Product [$($product.name)]" -Event Information
+            catch {
+                $ex = $PSItem
+                $errorMessage = Get-ErrorMessage -ErrorObject $ex
+
+                Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+
+                $productDisablesError++
+                throw "Error disabling HelloID Self service Product [$($obsoleteProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+            }
+        }
+    }
+    if ($removeProduct -eq $true) {
+        if ($dryRun -eq $false) {
+            if ($productRemovesSuccess -ge 1 -or $productRemoveserror -ge 1) {
+                Hid-Write-Status -Event Information -Message "Removed HelloID Self service Products. Success: $($productRemovesSuccess). Error: $($productRemoveserror)"
+                Hid-Write-Summary -Event Information -Message "Removed HelloID Self service Products. Success: $($productRemovesSuccess). Error: $($productRemoveserror)"
+            }
+        }
+        else {
+            Hid-Write-Status -Event Warning -Message "DryRun: Would remove [$(($obsoleteProducts | Measure-Object).Count)] HelloID Self service Products"
+            Hid-Write-Status -Event Warning -Message "DryRun: Would remove [$(($obsoleteProducts | Measure-Object).Count)] HelloID Self service Products"
+        }
+    }
+    else {
+        if ($dryRun -eq $false) {
+            if ($productDisablesSuccess -ge 1 -or $productDisablesError -ge 1) {
+                Hid-Write-Status -Event Information -Message "Disabled HelloID Self service Products. Success: $($productDisablesSuccess). Error: $($productDisablesError)"
+                Hid-Write-Summary -Event Information -Message "Disabled HelloID Self service Products. Success: $($productDisablesSuccess). Error: $($productDisablesError)"
+            }
+        }
+        else {
+            Hid-Write-Status -Event Warning -Message "DryRun: Would disable [$(($obsoleteProducts | Measure-Object).Count)] HelloID Self service Products"
+            Hid-Write-Status -Event Warning -Message "DryRun: Would disable [$(($obsoleteProducts | Measure-Object).Count)] HelloID Self service Products"
         }
     }
 
-    Write-HidStatus -Message "Successfully synchronized [$TargetSystemName] to HelloID products" -Event Success
-    Write-HidSummary -Message "Successfully synchronized [$TargetSystemName] to HelloID products" -Event Success
+    $productUpdatesSuccess = 0
+    $productUpdatesError = 0
+    foreach ($existingProduct in $existingProducts) {
+        try {
+            $currentProductInHelloID = $null
+            $currentProductInHelloID = $helloIDSelfServiceProductsInScopeGrouped[$existingProduct.Code]
+            # Convert collection object to PsCustomObject
+            $currentProductInHelloID = $currentProductInHelloID | Select-Object -Property *
+
+            if ($null -ne $currentProductInHelloID -and $overwriteExistingProduct -eq $true) {
+                # Update HelloID Self service Product
+                try {
+                    # Create custom productbody object
+                    $updateHelloIDSelfServiceProductBody = [PSCustomObject]@{}
+
+                    # Copy properties of current product in HelloID into productbody object
+                    $currentProductInHelloID.PSObject.Properties | ForEach-Object {
+                        $updateHelloIDSelfServiceProductBody | Add-Member -MemberType NoteProperty -Name $_.Name -Value $_.Value
+                    }
+
+                    # Calculate changes between current data and provided data
+                    $actionProperties = @("onRequest", "onApprove", "onApprove", "onDeny", "onReturn", "onWithdrawn")
+                    $splatCompareProperties = @{
+                        ReferenceObject  = @($currentProductInHelloID.PSObject.Properties)
+                        DifferenceObject = @($existingProduct.PSObject.Properties | Where-Object { $_.Name -notin $actionProperties }) # exclude the action variables, as aren't in the current product object
+                    }
+                    $changedProperties = $null
+                    $changedProperties = (Compare-Object @splatCompareProperties -PassThru)
+                    $newProperties = $changedProperties.Where( { $_.SideIndicator -eq "=>" })
+
+                    if (($newProperties | Measure-Object).Count -ge 1) {
+                        foreach ($newProperty in $newProperties) {
+                            $updateHelloIDSelfServiceProductBody | Add-Member -MemberType NoteProperty -Name $newProperty.Name -Value $newProperty.Value -Force
+                        }
+                        # Always add the product actions, as they aren't in the current product object and otherwise it will be a product without actions
+                        foreach ($actionProperty in $actionProperties) {
+                            $updateHelloIDSelfServiceProductBody | Add-Member -MemberType NoteProperty -Name $actionProperty -Value $existingProduct.$actionProperty -Force
+                        }
+
+                        $splatParams = @{
+                            Method = "POST"
+                            Uri    = "products"
+                            Body   = ($updateHelloIDSelfServiceProductBody | ConvertTo-Json -Depth 10)
+                        }
+    
+                        if ($dryRun -eq $false) {
+                            $updatedHelloIDSelfServiceProduct = Invoke-HIDRestMethod @splatParams
+    
+                            if ($verboseLogging -eq $true) {
+                                Hid-Write-Status -Event Success "Successfully updated HelloID Self service Product [$($updateHelloIDSelfServiceProductBody.Name)]"
+                            }
+                        }
+                        else {
+                            Hid-Write-Status -Event Warning "DryRun: Would update HelloID Self service Product [$($updateHelloIDSelfServiceProductBody.name)]"
+                        }
+                    }
+                    else {
+                        if ($dryRun -eq $false) {
+                            if ($verboseLogging -eq $true) {
+                                Hid-Write-Status -Event Success "No changes to HelloID Self service Product [$($updateHelloIDSelfServiceProductBody.Name)]"
+                            }
+                        }
+                        else {
+                            Hid-Write-Status -Event Warning "DryRun: No changes to HelloID Self service Product [$($updateHelloIDSelfServiceProductBody.Name)]"
+                        }
+                    }
+                }
+                catch {
+                    $ex = $PSItem
+                    $errorMessage = Get-ErrorMessage -ErrorObject $ex
+                    
+                    Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+                    
+                    throw "Error updating HelloID Self service Product [$($updateHelloIDSelfServiceProductBody.name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+                }
+
+                if ($overwriteAccessGroup -eq $true) {
+                    # Get HelloID Access Group
+                    $helloIDAccessGroup = $null
+                    $helloIDAccessGroup = $helloIDGroupsInScopeGroupedBySourceAndName["$($productAccessGroup)"]
+
+                    # Add HelloID Access Group to HelloID Self service Product
+                    if (-not $null -eq $helloIDAccessGroup) {
+                        try {
+                            $addHelloIDAccessGroupToProductBody = @{
+                                GroupGuid = "$($helloIDAccessGroup.groupGuid)"
+                            }
+
+                            $splatParams = @{
+                                Method = "POST"
+                                Uri    = "selfserviceproducts/$($currentProductInHelloID.productId)/groups"
+                                Body   = ($addHelloIDAccessGroupToProductBody | ConvertTo-Json -Depth 10)
+                            }
+
+                            if ($dryRun -eq $false) {
+                                $addHelloIDAccessGroupToProduct = Invoke-HIDRestMethod @splatParams
+
+                                if ($verboseLogging -eq $true) {
+                                    Hid-Write-Status -Event Success "Successfully added HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($updatedHelloIDSelfServiceProduct.Name)]"
+                                }
+                            }
+                            else {
+                                if ($verboseLogging -eq $true) {
+                                    Hid-Write-Status -Event Warning "DryRun: Would add HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($updatedHelloIDSelfServiceProduct.Name)]"
+                                }
+                            }
+                        }
+                        catch {
+                            $ex = $PSItem
+                            $errorMessage = Get-ErrorMessage -ErrorObject $ex
+                    
+                            Hid-Write-Status -Event Error -Message "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+                    
+                            throw "Error adding HelloID Access Group [$($helloIDAccessGroup.Name)] to HelloID Self service Product [$($updatedHelloIDSelfServiceProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+                        }
+                    }
+                    else {
+                        if ($verboseLogging -eq $true) {
+                            Hid-Write-Status  -Event Warning -Message "The Specified HelloID Access Group [$($productAccessGroup)] does not exist. We will continue without adding the access Group to HelloID Self service Product [$($updatedHelloIDSelfServiceProduct.Name)]"
+                        }
+                    }
+                }
+                
+                $productUpdatesSuccess++
+            }
+        }
+        catch {
+            $ex = $PSItem
+            $errorMessage = Get-ErrorMessage -ErrorObject $ex
+            
+            Write-Verbose "Error at Line [$($ex.InvocationInfo.ScriptLineNumber)]: $($ex.InvocationInfo.Line). Error: $($($errorMessage.VerboseErrorMessage))"
+            
+            $productUpdatesError++
+            throw "Error updating HelloID Self service Product [$($existingProduct.Name)]. Error Message: $($errorMessage.AuditErrorMessage)"
+        }
+    }
+    if ($dryRun -eq $false) {
+        if ($productUpdatesSuccess -ge 1 -or $productUpdatesError -ge 1) {
+            Hid-Write-Status -Event Information -Message "Updated HelloID Self service Products. Success: $($productUpdatesSuccess). Error: $($productUpdatesError)"
+            Hid-Write-Summary -Event Information -Message "Updated HelloID Self service Products. Success: $($productUpdatesSuccess). Error: $($productUpdatesError)"
+        }
+    }
+    else {
+        Hid-Write-Status -Event Warning -Message "DryRun: Would update [$(($existingProducts | Measure-Object).Count)] HelloID Self service Products"
+        Hid-Write-Status -Event Warning -Message "DryRun: Would update [$(($existingProducts | Measure-Object).Count)] HelloID Self service Products"
+    }
+
+    if ($dryRun -eq $false) {
+        Hid-Write-Status -Event Success -Message "Successfully synchronized [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
+        Hid-Write-Summary -Event Success -Message "Successfully synchronized [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
+    }
+    else {
+        Hid-Write-Status -Event Success -Message "DryRun: Would synchronize [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
+        Hid-Write-Summary -Event Success -Message "DryRun: Would synchronize [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
+    }
 }
 catch {
-    Write-HidStatus -Message "Error synchronization of [$TargetSystemName] to HelloID products" -Event Error
-    Write-HidStatus -Message "Exception message: $($_.Exception.Message)" -Event Error
-    Write-HidStatus -Message "Exception details: $($_.errordetails)" -Event Error
-    Write-HidSummary -Message "Error synchronization of [$TargetSystemName] to HelloID products" -Event Failed
+    Hid-Write-Status -Event Error -Message "Error synchronization of [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
+    Hid-Write-Status -Event Error -Message "Error at Line [$($_.InvocationInfo.ScriptLineNumber)]: $($_.InvocationInfo.Line)."
+    Hid-Write-Status -Event Error -Message "Exception message: $($_.Exception.Message)"
+    Hid-Write-Status -Event Error -Message "Exception details: $($_.errordetails)"
+    Hid-Write-Summary -Event Failed -Message "Error synchronization of [$(($groupsInScope | Measure-Object).Count)] Exchange Online Distribution Groups to [$totalProducts] HelloID Self service Products"
 }
 #endregion
